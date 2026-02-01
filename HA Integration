@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+“””
+BMAC3 Flight Tracker - Home Assistant Integration
+Runs as a service, exposes state via a simple HTTP API
+for Home Assistant to read and control.
+
+Home Assistant setup:
+
+- Add as a REST sensor to read state
+- Use REST commands to toggle on/off
+
+Endpoints:
+GET  /state    - Returns current state JSON
+POST /enable   - Start collecting/parsing
+POST /disable  - Stop collecting/parsing
+“””
+import json
+import os
+import sys
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(**file**)))
+from config import *
+
+class BMac3Handler(BaseHTTPRequestHandler):
+
+```
+def do_GET(self):
+    if self.path == "/state":
+        try:
+            with open(HA_STATE_FILE, "r") as f:
+                state = json.load(f)
+        except:
+            state = {"error": "State file not found"}
+
+        # Add file size info
+        try:
+            xml_size = os.path.getsize(RAW_XML_FILE)
+            state["xml_file_size_kb"] = round(xml_size / 1024, 1)
+        except:
+            state["xml_file_size_kb"] = 0
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(state).encode())
+    else:
+        self.send_response(404)
+        self.end_headers()
+
+def do_POST(self):
+    if self.path in ["/enable", "/disable"]:
+        try:
+            with open(HA_STATE_FILE, "r") as f:
+                state = json.load(f)
+        except:
+            state = {}
+
+        enabled = self.path == "/enable"
+        state["collector_enabled"] = enabled
+        state["action_requested"] = "enable" if enabled else "disable"
+        state["action_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        with open(HA_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"status": "ok", "enabled": enabled}).encode())
+    else:
+        self.send_response(404)
+        self.end_headers()
+
+def log_message(self, format, *args):
+    pass  # Suppress HTTP logs
+```
+
+def main():
+# Make sure state file exists
+if not os.path.exists(HA_STATE_FILE):
+state = {
+“collector_enabled”: True,
+“collector_running”: False,
+“parser_running”: False,
+“total_rows_uploaded”: 0,
+“last_upload_time”: None,
+“last_upload_count”: 0,
+“error”: None
+}
+with open(HA_STATE_FILE, “w”) as f:
+json.dump(state, f, indent=2)
+
+```
+server = HTTPServer(("0.0.0.0", 8123), BMac3Handler)
+print("BMAC3 HA API running on port 8123")
+print("  GET  http://localhost:8123/state")
+print("  POST http://localhost:8123/enable")
+print("  POST http://localhost:8123/disable")
+server.serve_forever()
+```
+
+if **name** == “**main**”:
+main()
