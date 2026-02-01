@@ -308,7 +308,6 @@ def upload_batch(conn, flights):
                 count += 1
             except pyodbc.IntegrityError:
                 skipped += 1
-                conn.rollback()
                 continue
 
         conn.commit()
@@ -350,7 +349,23 @@ def process_file(conn):
 
     logging.info(f"Parsed {len(flights)} valid flights")
 
-    uploaded = upload_batch(conn, flights)
+    uploaded = 0
+    for i in range(0, len(flights), MAX_BATCH_SIZE):
+        chunk = flights[i:i+MAX_BATCH_SIZE]
+        if conn is None:
+            conn = connect_azure()
+            if conn is None:
+                logging.error("Reconnect failed mid-batch")
+                break
+        result = upload_batch(conn, chunk)
+        if result == 0 and len(chunk) > 0:
+            # Connection may have died, try reconnecting next chunk
+            try:
+                conn.close()
+            except:
+                pass
+            conn = None
+        uploaded += result
 
     if uploaded > 0:
         last_msg_end = content.rfind('</message>') + len('</message>')
