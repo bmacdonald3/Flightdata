@@ -4,6 +4,9 @@ Edit this file to change any settings.
 Can be edited via GitHub without SSH access.
 """
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # reads ~/.env (or .env in working directory)
 
 # ─── PATHS ───────────────────────────────────────────
 BASE_DIR                = os.path.expanduser("~")
@@ -16,7 +19,7 @@ SWIM_PROVIDER_URL       = "tcps://ems1.swim.faa.gov:55443"
 SWIM_QUEUE              = "ben.bmac3.com.FDPS.6fcee934-3cd9-4cc2-b8aa-014705903c28.OUT"
 SWIM_CONNECTION_FACTORY = "ben.bmac3.com.CF"
 SWIM_USERNAME           = "ben.bmac3.com"
-SWIM_PASSWORD           = "fjeF2b8xTN2Ybnw8XpIyQg"
+SWIM_PASSWORD           = os.getenv("SWIM_PASSWORD")
 SWIM_VPN                = "FDPS"
 SWIM_RUN_CMD            = os.path.join(BASE_DIR, "bin", "run")
 
@@ -24,7 +27,7 @@ SWIM_RUN_CMD            = os.path.join(BASE_DIR, "bin", "run")
 AZURE_SERVER            = "flight-data-server-macdonaldfamily.database.windows.net"
 AZURE_DATABASE          = "Flightdata"
 AZURE_USERNAME          = "flightadmin"
-AZURE_PASSWORD          = "bM_137182"  # <── Update this
+AZURE_PASSWORD          = os.getenv("AZURE_PASSWORD")
 AZURE_CONN_STR = (
     f"DRIVER={{ODBC Driver 18 for SQL Server}};"
     f"SERVER={AZURE_SERVER};"
