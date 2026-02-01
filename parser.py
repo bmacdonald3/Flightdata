@@ -259,54 +259,60 @@ def upload_batch(conn, flights):
 
     cursor = conn.cursor()
     count = 0
+    skipped = 0
 
     try:
         for f in flights:
-            f['vertical_speed'] = calculate_vertical_speed(
-                conn, f.get('gufi'), f.get('altitude'), f.get('position_time')
-            )
+            # Calculate vertical speed before inserting
+            # f['vertical_speed'] = calculate_vertical_speed(
+            f['vertical_speed'] = None
 
-            cursor.execute('''
-                INSERT INTO flights
-                (timestamp, callsign, computer_id, gufi, departure, arrival,
-                 departure_actual_time, arrival_estimated_time,
-                 latitude, longitude, altitude, speed, track,
-                 assigned_altitude, assigned_altitude_type,
-                 vertical_speed, position_time,
-                 status, operator, center,
-                 controlling_unit, controlling_sector,
-                 flight_plan_id, mode_s)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f.get('timestamp'),
-                f.get('callsign'),
-                f.get('computer_id'),
-                f.get('gufi'),
-                f.get('departure'),
-                f.get('arrival'),
-                f.get('departure_actual_time'),
-                f.get('arrival_estimated_time'),
-                f.get('latitude'),
-                f.get('longitude'),
-                f.get('altitude'),
-                f.get('speed'),
-                f.get('track'),
-                f.get('assigned_altitude'),
-                f.get('assigned_altitude_type'),
-                f.get('vertical_speed'),
-                f.get('position_time'),
-                f.get('status'),
-                f.get('operator'),
-                f.get('center'),
-                f.get('controlling_unit'),
-                f.get('controlling_sector'),
-                f.get('flight_plan_id'),
-                f.get('mode_s'),
-            ))
-            count += 1
+            try:
+                cursor.execute('''
+                    INSERT INTO flights
+                    (timestamp, callsign, computer_id, gufi, departure, arrival,
+                     departure_actual_time, arrival_estimated_time,
+                     latitude, longitude, altitude, speed, track,
+                     assigned_altitude, assigned_altitude_type,
+                     vertical_speed, position_time,
+                     status, operator, center,
+                     controlling_unit, controlling_sector,
+                     flight_plan_id, mode_s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    f.get('timestamp'),
+                    f.get('callsign'),
+                    f.get('computer_id'),
+                    f.get('gufi'),
+                    f.get('departure'),
+                    f.get('arrival'),
+                    f.get('departure_actual_time'),
+                    f.get('arrival_estimated_time'),
+                    f.get('latitude'),
+                    f.get('longitude'),
+                    f.get('altitude'),
+                    f.get('speed'),
+                    f.get('track'),
+                    f.get('assigned_altitude'),
+                    f.get('assigned_altitude_type'),
+                    f.get('vertical_speed'),
+                    f.get('position_time'),
+                    f.get('status'),
+                    f.get('operator'),
+                    f.get('center'),
+                    f.get('controlling_unit'),
+                    f.get('controlling_sector'),
+                    f.get('flight_plan_id'),
+                    f.get('mode_s'),
+                ))
+                count += 1
+            except pyodbc.IntegrityError:
+                skipped += 1
+                conn.rollback()
+                continue
 
         conn.commit()
-        logging.info(f"Uploaded {count} flights to Azure")
+        logging.info(f"Uploaded {count} flights, skipped {skipped} duplicates")
         return count
 
     except Exception as e:
