@@ -306,8 +306,9 @@ def upload_batch(conn, flights):
                     f.get('mode_s'),
                 ))
                 count += 1
-            except pyodbc.IntegrityError:
+            except (pyodbc.IntegrityError, pyodbc.OperationalError, pyodbc.DatabaseError) as e:
                 skipped += 1
+                logging.warning(f"Skipped row ({flight.get('callsign', 'unknown')}): {e}")
                 continue
 
         conn.commit()
@@ -426,8 +427,11 @@ def main():
             state["parser_running"] = False
             save_state(state)
         finally:
-            if conn:
-                conn.close()
+            try:
+                if conn:
+                    conn.close()
+            except:
+                pass
             time.sleep(10)
 
 if __name__ == "__main__":
