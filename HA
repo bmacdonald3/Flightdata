@@ -1,0 +1,155 @@
+# ================================================================
+
+# BMAC3 Flight Tracker - Home Assistant Configuration
+
+# Copy this into your configuration.yaml or create as a separate
+
+# file and include it.
+
+# ================================================================
+
+# ── REST Sensors (reads state from Pi) ────────────────────────
+
+rest:
+
+- resource: http://192.168.42.13:8123/state
+  scan_interval: 5
+  sensor:
+  - name: “BMAC3 Collector Running”
+    value_template: “{{ states.rest.state.attributes.collector_running }}”
+    device_class: running
+  - name: “BMAC3 Parser Running”
+    value_template: “{{ states.rest.state.attributes.parser_running }}”
+    device_class: running
+  - name: “BMAC3 Total Rows”
+    value_template: “{{ states.rest.state.attributes.total_rows_uploaded }}”
+    unit_of_measurement: “rows”
+    device_class: data_size
+  - name: “BMAC3 Last Upload”
+    value_template: “{{ states.rest.state.attributes.last_upload_time }}”
+  - name: “BMAC3 Last Upload Count”
+    value_template: “{{ states.rest.state.attributes.last_upload_count }}”
+    unit_of_measurement: “flights”
+  - name: “BMAC3 XML File Size”
+    value_template: “{{ states.rest.state.attributes.xml_file_size_kb }}”
+    unit_of_measurement: “KB”
+  - name: “BMAC3 Error”
+    value_template: “{{ states.rest.state.attributes.error }}”
+  - name: “BMAC3 Enabled”
+    value_template: “{{ states.rest.state.attributes.collector_enabled }}”
+
+# ── REST Commands (enable/disable the tracker) ───────────────
+
+rest_command:
+bmac3_enable:
+url: http://192.168.42.13:8123/enable
+method: POST
+bmac3_disable:
+url: http://192.168.42.13:8123/disable
+method: POST
+
+# ── Dashboard (Lovelace) ─────────────────────────────────────
+
+# Add this to a dashboard view in your Lovelace UI
+
+# or create a new dashboard called “Flight Tracker”
+
+# views:
+
+# - title: Flight Tracker
+
+# icon: mdi:airplane
+
+# cards:
+
+# - type: vertical-stack
+
+# cards:
+
+# - type: horizontal-stack
+
+# cards:
+
+# - type: button
+
+# tap_action:
+
+# action: call-service
+
+# service: rest_command.bmac3_enable
+
+# name: “Start”
+
+# icon: mdi:play-circle-outline
+
+# icon_color: green
+
+# - type: button
+
+# tap_action:
+
+# action: call-service
+
+# service: rest_command.bmac3_disable
+
+# name: “Stop”
+
+# icon: mdi:stop-circle-outline
+
+# icon_color: red
+
+# - type: entities
+
+# title: “BMAC3 Flight Tracker”
+
+# icon: mdi:airplane
+
+# entities:
+
+# - entity: sensor.bmac3_enabled
+
+# name: “Enabled”
+
+# icon: mdi:toggle-switch
+
+# - entity: sensor.bmac3_collector_running
+
+# name: “Collector”
+
+# icon: mdi:airplane-landing
+
+# - entity: sensor.bmac3_parser_running
+
+# name: “Parser”
+
+# icon: mdi:cog
+
+# - entity: sensor.bmac3_total_rows
+
+# name: “Total Rows Uploaded”
+
+# icon: mdi:database
+
+# - entity: sensor.bmac3_last_upload
+
+# name: “Last Upload”
+
+# icon: mdi:clock-outline
+
+# - entity: sensor.bmac3_last_upload_count
+
+# name: “Last Batch”
+
+# icon: mdi:airplane
+
+# - entity: sensor.bmac3_xml_file_size
+
+# name: “Raw Data Buffer”
+
+# icon: mdi:file-xml
+
+# - entity: sensor.bmac3_error
+
+# name: “Error”
+
+# icon: mdi:alert-circle
