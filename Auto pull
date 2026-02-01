@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+“””
+BMAC3 Flight Tracker - GitHub Auto-Pull
+Checks for updates from GitHub every 5 minutes.
+If new code is pulled, restarts the affected services automatically.
+This means you can edit parser.py (or any file) on GitHub
+and it will automatically update on the Pi - no SSH needed.
+“””
+import subprocess
+import os
+import sys
+import time
+import logging
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(**file**)))
+from config import *
+
+logging.basicConfig(
+filename=LOG_FILE,
+level=logging.INFO,
+format=”%(asctime)s [AUTO-PULL] %(message)s”
+)
+
+REPO_DIR = os.path.dirname(os.path.abspath(**file**))
+CHECK_INTERVAL = 300  # 5 minutes
+
+# These services restart if their file changed
+
+FILE_SERVICE_MAP = {
+“collector.py”: “bmac3-collector”,
+“parser.py”: “bmac3-parser”,
+“ha_integration.py”: “bmac3-ha”,
+“config.py”: [“bmac3-collector”, “bmac3-parser”, “bmac3-ha”],  # restart all if config changes
+}
+
+def run(cmd):
+“”“Run a shell command and return output”””
+result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=REPO_DIR)
+return result.stdout.strip(), result.stderr.strip(), result.returncode
+
+def get_changed_files():
+“”“Pull from GitHub and return list of changed files”””
+# Fetch latest
+stdout, stderr, rc = run(“git fetch origin”)
+if rc != 0:
+logging.error(f”Git fetch failed: {stderr}”)
+return []
+
+```
+# Check if we're behind
+stdout, _, _ = run("git rev-list HEAD..origin/main --count")
+commits_behind = int(stdout) if stdout.isdigit() else 0
+
+if commits_behind == 0:
+    return []
+
+logging.info(f"{commits_behind} new commit(s) available")
+
+# Get list of changed files before pulling
+stdout, _, _ = run("git diff --name-only HEAD origin/main")
+changed_files = [f.strip() for f in stdout.split("\n") if f.strip()]
+
+# Pull changes
+stdout, stderr, rc = run("git pull origin main")
+if rc != 0:
+    logging.error(f"Git pull failed: {stderr}")
+    return []
+
+logging.info(f"Pulled changes: {changed_files}")
+return changed_files
+```
+
+def restart_services(changed_files):
+“”“Restart services affected by changed files”””
+services_to_restart = set()
+
+```
+for f in changed_files:
+    if f in FILE_SERVICE_MAP:
+        svc = FILE_SERVICE_MAP[f]
+        if isinstance(svc, list):
+            services_to_restart.update(svc)
+        else:
+            services_to_restart.add(svc)
+
+for service in services_to_restart:
+    logging.info(f"Restarting {service}...")
+    stdout, stderr, rc = run(f"sudo systemctl restart {service}")
+    if rc != 0:
+        logging.error(f"Failed to restart {service}: {stderr}")
+    else:
+        logging.info(f"Restarted {service} successfully")
+```
+
+def main():
+logging.info(“Auto-pull starting…”)
+
+```
+while True:
+    try:
+        changed_files = get_changed_files()
+        if changed_files:
+            restart_services(changed_files)
+    except Exception as e:
+        logging.error(f"Auto-pull error: {e}")
+
+    time.sleep(CHECK_INTERVAL)
+```
+
+if **name** == “**main**”:
+main()
