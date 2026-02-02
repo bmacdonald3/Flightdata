@@ -49,7 +49,7 @@ NS = {
 
 # ─── PARSING SETTINGS ────────────────────────────────
 PARSE_INTERVAL_SECONDS  = 10    # How often to check for new data
-MAX_BATCH_SIZE          = 500   # Max flights to upload per cycle
+MAX_BATCH_SIZE          = 2000   # Max flights to upload per cycle
 
 # ─── HOME ASSISTANT ──────────────────────────────────
 HA_STATE_FILE           = os.path.join(BASE_DIR, "bmac3_state.json")

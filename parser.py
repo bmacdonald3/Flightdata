@@ -345,9 +345,8 @@ def process_file(conn):
     flights = []
     for msg in messages:
         flight = parse_flight(msg)
-        if flight:
+        if flight and flight.get('callsign', '').startswith('N'):
             flights.append(flight)
-
     logging.info(f"Parsed {len(flights)} valid flights")
 
     uploaded = 0
