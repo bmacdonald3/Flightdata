@@ -308,7 +308,7 @@ def upload_batch(conn, flights):
                 count += 1
             except (pyodbc.IntegrityError, pyodbc.OperationalError, pyodbc.DatabaseError) as e:
                 skipped += 1
-                logging.warning(f"Skipped row ({flight.get('callsign', 'unknown')}): {e}")
+                logging.warning(f"Skipped row ({f.get('callsign', 'unknown')}): {e}")
                 continue
 
         conn.commit()
@@ -367,6 +367,12 @@ def process_file(conn):
                 pass
             conn = None
         uploaded += result
+        if result > 0:
+            state = get_state()
+            state["total_rows_uploaded"] = state.get("total_rows_uploaded", 0) + result
+            state["last_upload_count"] = result
+            state["last_upload_time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
 
     if uploaded > 0:
         last_msg_end = content.rfind('</message>') + len('</message>')
