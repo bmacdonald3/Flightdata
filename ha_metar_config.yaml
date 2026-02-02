@@ -1,0 +1,170 @@
+# =============================================================================
+# METAR Collector - Home Assistant Configuration
+# =============================================================================
+# Add these sections to your configuration.yaml or include as a package
+#
+# Prerequisites:
+# 1. SSH key configured at /config/ssh_keys/pi_ha
+# 2. Shell scripts deployed to Pi at /home/bmacdonald3/
+# 3. metar-collector.service running on Pi
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Command Line Sensors
+# -----------------------------------------------------------------------------
+command_line:
+  # Main state sensor - polls metar_state.json every 10 seconds
+  - sensor:
+      name: METAR State
+      unique_id: metar_state
+      command: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_status.sh"'
+      value_template: "{{ value_json.collector_running | default(false) }}"
+      json_attributes:
+        - collector_enabled
+        - collector_running
+        - last_fetch_time
+        - last_fetch_success
+        - last_error
+        - total_fetches
+        - total_observations
+        - session_fetches
+        - session_observations
+        - airports_count
+        - updated_at
+      scan_interval: 10
+
+  # Azure row count - polled less frequently
+  - sensor:
+      name: METAR Azure Row Count
+      unique_id: metar_azure_row_count
+      command: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_azure_count.sh"'
+      value_template: "{{ value | int(0) }}"
+      unit_of_measurement: "rows"
+      scan_interval: 120
+
+  # Recent log entries
+  - sensor:
+      name: METAR Log
+      unique_id: metar_log
+      command: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_log.sh 5"'
+      value_template: "{{ value[:250] }}"
+      scan_interval: 30
+
+# -----------------------------------------------------------------------------
+# Template Sensors (derived from main state sensor)
+# -----------------------------------------------------------------------------
+template:
+  - sensor:
+      - name: "METAR Collector Status"
+        unique_id: metar_collector_status
+        state: >
+          {% if state_attr('sensor.metar_state', 'collector_running') == true %}
+            Running
+          {% else %}
+            Stopped
+          {% endif %}
+        icon: >
+          {% if state_attr('sensor.metar_state', 'collector_running') == true %}
+            mdi:weather-partly-cloudy
+          {% else %}
+            mdi:weather-cloudy-alert
+          {% endif %}
+
+      - name: "METAR Total Observations"
+        unique_id: metar_total_observations
+        state: "{{ state_attr('sensor.metar_state', 'total_observations') | int(0) }}"
+        unit_of_measurement: "obs"
+        icon: mdi:database
+
+      - name: "METAR Session Observations"
+        unique_id: metar_session_observations
+        state: "{{ state_attr('sensor.metar_state', 'session_observations') | int(0) }}"
+        unit_of_measurement: "obs"
+        icon: mdi:counter
+
+      - name: "METAR Total Fetches"
+        unique_id: metar_total_fetches
+        state: "{{ state_attr('sensor.metar_state', 'total_fetches') | int(0) }}"
+        unit_of_measurement: "fetches"
+        icon: mdi:cloud-download
+
+      - name: "METAR Airports Count"
+        unique_id: metar_airports_count
+        state: "{{ state_attr('sensor.metar_state', 'airports_count') | int(0) }}"
+        unit_of_measurement: "airports"
+        icon: mdi:airplane-marker
+
+      - name: "METAR Last Fetch"
+        unique_id: metar_last_fetch
+        state: >
+          {% set last = state_attr('sensor.metar_state', 'last_fetch_time') %}
+          {% if last %}
+            {{ as_timestamp(last) | timestamp_custom('%H:%M:%S') }}
+          {% else %}
+            Never
+          {% endif %}
+        icon: mdi:clock-outline
+
+      - name: "METAR Last Error"
+        unique_id: metar_last_error
+        state: "{{ state_attr('sensor.metar_state', 'last_error') | default('None', true) }}"
+        icon: mdi:alert-circle-outline
+
+  - binary_sensor:
+      - name: "METAR Pipeline Healthy"
+        unique_id: metar_pipeline_healthy
+        state: >
+          {{ state_attr('sensor.metar_state', 'collector_running') == true 
+             and state_attr('sensor.metar_state', 'last_fetch_success') == true }}
+        device_class: running
+        icon: >
+          {% if this.state == 'on' %}
+            mdi:check-circle
+          {% else %}
+            mdi:alert-circle
+          {% endif %}
+
+      - name: "METAR Stale"
+        unique_id: metar_stale
+        state: >
+          {% set last = state_attr('sensor.metar_state', 'last_fetch_time') %}
+          {% if last %}
+            {{ (now() - as_datetime(last)).total_seconds() > 600 }}
+          {% else %}
+            true
+          {% endif %}
+        device_class: problem
+        icon: mdi:clock-alert
+
+# -----------------------------------------------------------------------------
+# Shell Commands (for actions)
+# -----------------------------------------------------------------------------
+shell_command:
+  metar_restart_collector: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "sudo systemctl restart metar-collector"'
+  metar_clear_azure: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_azure_clear.sh"'
+
+# -----------------------------------------------------------------------------
+# Switch (on/off control)
+# -----------------------------------------------------------------------------
+switch:
+  - platform: template
+    switches:
+      metar_collector:
+        unique_id: metar_collector_switch
+        friendly_name: "METAR Collector"
+        value_template: "{{ state_attr('sensor.metar_state', 'collector_enabled') == true }}"
+        icon_template: >
+          {% if state_attr('sensor.metar_state', 'collector_enabled') == true %}
+            mdi:weather-sunny
+          {% else %}
+            mdi:weather-sunny-off
+          {% endif %}
+        turn_on:
+          - service: shell_command.metar_switch_on
+        turn_off:
+          - service: shell_command.metar_switch_off
+
+# Additional shell commands for switch
+# (Add to shell_command section above)
+#   metar_switch_on: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_switch_on.sh"'
+#   metar_switch_off: 'ssh -i /config/ssh_keys/pi_ha -o StrictHostKeyChecking=no bmacdonald3@192.168.42.13 "~/metar_switch_off.sh"'

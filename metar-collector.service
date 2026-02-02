@@ -1,0 +1,27 @@
+[Unit]
+Description=METAR Weather Data Collector
+Documentation=https://github.com/bmacdonald3/Flightdata
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bmacdonald3
+WorkingDirectory=/home/bmacdonald3
+ExecStart=/usr/bin/python3 /home/bmacdonald3/metar_collector.py
+Restart=always
+RestartSec=10
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+MemoryMax=256M
+CPUQuota=25%
+
+[Install]
+WantedBy=multi-user.target
