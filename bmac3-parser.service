@@ -1,0 +1,14 @@
+[Unit]
+Description=BMAC3 SWIM Flight Data Parser
+After=network.target
+
+[Service]
+Type=simple
+User=bmacdonald3
+WorkingDirectory=/home/bmacdonald3
+ExecStart=/usr/bin/python3 /home/bmacdonald3/parser.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
