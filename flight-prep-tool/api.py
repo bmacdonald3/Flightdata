@@ -6,6 +6,7 @@ from flask_cors import CORS
 import pymssql
 import sys
 import os
+import math
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.expanduser('~'))
@@ -19,6 +20,61 @@ def get_conn():
         server=AZURE_SERVER, user=AZURE_USERNAME, password=AZURE_PASSWORD,
         database=AZURE_DATABASE, tds_version='7.3', autocommit=True
     )
+
+def calculate_derivatives(points):
+    """Calculate acceleration, turn rate, and vertical acceleration for each point"""
+    if len(points) < 2:
+        return points
+    
+    for i in range(len(points)):
+        points[i]['accel'] = None
+        points[i]['turn_rate'] = None
+        points[i]['vert_accel'] = None
+        
+        if i == 0:
+            continue
+            
+        prev = points[i-1]
+        curr = points[i]
+        
+        # Calculate time delta in seconds
+        try:
+            t1 = datetime.fromisoformat(prev['position_time'].replace('Z', '+00:00'))
+            t2 = datetime.fromisoformat(curr['position_time'].replace('Z', '+00:00'))
+            dt = (t2 - t1).total_seconds()
+        except:
+            continue
+            
+        if dt <= 0 or dt > 120:  # Skip if bad time delta or gap > 2 min
+            continue
+        
+        # Horizontal acceleration (knots per second)
+        if prev.get('speed') is not None and curr.get('speed') is not None:
+            accel = (curr['speed'] - prev['speed']) / dt
+            curr['accel'] = round(accel, 2)
+        
+        # Turn rate (degrees per second)
+        if prev.get('track') is not None and curr.get('track') is not None:
+            try:
+                track1 = float(prev['track'])
+                track2 = float(curr['track'])
+                # Handle wrap-around (e.g., 350° to 10°)
+                diff = track2 - track1
+                if diff > 180:
+                    diff -= 360
+                elif diff < -180:
+                    diff += 360
+                turn_rate = diff / dt
+                curr['turn_rate'] = round(turn_rate, 2)
+            except:
+                pass
+        
+        # Vertical acceleration (fpm per second)
+        if prev.get('vertical_speed') is not None and curr.get('vertical_speed') is not None:
+            vert_accel = (curr['vertical_speed'] - prev['vertical_speed']) / dt
+            curr['vert_accel'] = round(vert_accel, 1)
+    
+    return points
 
 @app.route('/api/flights', methods=['GET'])
 def list_flights():
@@ -77,6 +133,10 @@ def get_flight_track():
         for k, v in p.items():
             if isinstance(v, datetime):
                 p[k] = v.isoformat()
+    
+    # Calculate derivatives
+    points = calculate_derivatives(points)
+    
     return jsonify({'points': points})
 
 @app.route('/api/stage', methods=['POST'])
