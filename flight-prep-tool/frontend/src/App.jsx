@@ -9,6 +9,7 @@ export default function App() {
   const [selectedTrack, setSelectedTrack] = useState([])
   const [dateFilter, setDateFilter] = useState(new Date().toISOString().split('T')[0])
   const [modelFilter, setModelFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingTrack, setLoadingTrack] = useState(false)
   const [staged, setStaged] = useState(null)
@@ -51,10 +52,18 @@ export default function App() {
     return modelList.sort()
   }, [flights])
 
+  const statuses = useMemo(() => {
+    const statusList = [...new Set(flights.map(f => f.flight_status).filter(Boolean))]
+    return statusList.sort()
+  }, [flights])
+
   const filteredFlights = useMemo(() => {
     let result = flights
     if (modelFilter) {
       result = result.filter(f => f.model && f.model.toLowerCase().includes(modelFilter.toLowerCase()))
+    }
+    if (statusFilter) {
+      result = result.filter(f => f.flight_status === statusFilter)
     }
     return result.sort((a, b) => {
       let aVal = a[sortField], bVal = b[sortField]
@@ -66,7 +75,7 @@ export default function App() {
       if (aVal > bVal) return sortDir === 'asc' ? 1 : -1
       return 0
     })
-  }, [flights, modelFilter, sortField, sortDir])
+  }, [flights, modelFilter, statusFilter, sortField, sortDir])
 
   const handleSort = (field) => {
     if (sortField === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
@@ -74,7 +83,7 @@ export default function App() {
   }
 
   const SortHeader = ({ field, children }) => (
-    <th onClick={() => handleSort(field)} style={{padding:10, cursor:'pointer', background:'#2a2a4a', whiteSpace:'nowrap'}}>
+    <th onClick={() => handleSort(field)} style={{padding:8, cursor:'pointer', background:'#2a2a4a', whiteSpace:'nowrap'}}>
       {children} {sortField === field ? (sortDir === 'asc' ? '▲' : '▼') : ''}
     </th>
   )
@@ -87,7 +96,7 @@ export default function App() {
     try {
       const res = await fetch(`${API}/stage`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({gufi:selectedGufi}) })
       const data = await res.json()
-      if (data.success) { setStaged(data); setMessage(`✓ Staged: ${data.callsign}`) }
+      if (data.success) { setStaged(data); setMessage(`✓ Staged: ${data.callsign} (${data.flight_status})`) }
       else setMessage('Error: ' + (data.error || 'Unknown'))
     } catch (err) { setMessage('Error: ' + err.message) }
     setLoading(false)
@@ -98,6 +107,16 @@ export default function App() {
   const formatDuration = (m) => m ? `${Math.floor(m/60)}h ${m%60}m` : '-'
   const formatTime = (iso) => { try { return new Date(iso).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) } catch { return '-' }}
   const font = { fontFamily: "'SF Mono', Consolas, Monaco, monospace" }
+
+  const statusColor = (status) => {
+    switch(status) {
+      case 'Landed': return '#8f8'
+      case 'Approach': return '#ff8'
+      case 'Pattern': return '#8ff'
+      case 'Enroute': return '#88f'
+      default: return '#888'
+    }
+  }
 
   const accelColor = (val) => {
     if (val == null) return 'inherit'
@@ -119,9 +138,13 @@ export default function App() {
       <div style={{padding:12, borderBottom:'1px solid #333', display:'flex', alignItems:'center', gap:12, flexWrap:'wrap'}}>
         <b style={{fontSize:18}}>Flight Data Prep</b>
         <input type="date" value={dateFilter} onChange={handleDateChange} style={{padding:6, background:'#2a2a4a', color:'#eee', border:'1px solid #444', borderRadius:4, ...font, fontSize:13}}/>
-        <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} style={{padding:6, background:'#2a2a4a', color:'#eee', border:'1px solid #444', borderRadius:4, ...font, fontSize:13, minWidth:150}}>
+        <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} style={{padding:6, background:'#2a2a4a', color:'#eee', border:'1px solid #444', borderRadius:4, ...font, fontSize:13, minWidth:120}}>
           <option value="">All Models</option>
           {models.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{padding:6, background:'#2a2a4a', color:'#eee', border:'1px solid #444', borderRadius:4, ...font, fontSize:13, minWidth:100}}>
+          <option value="">All Status</option>
+          {statuses.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <button onClick={() => loadFlights(dateFilter)} style={{padding:'6px 14px', background:'#333', color:'#eee', border:'1px solid #444', borderRadius:4, ...font, fontSize:13}}>{loading ? '...' : 'Refresh'}</button>
         <button onClick={stageSelected} disabled={!selectedGufi} style={{padding:'6px 14px', background:selectedGufi?'#06c':'#444', color:'#fff', border:'none', borderRadius:4, ...font, fontSize:13}}>Stage</button>
@@ -130,7 +153,7 @@ export default function App() {
         <a href="http://192.168.42.13:5173" target="_blank" rel="noreferrer" style={{marginLeft:'auto', padding:'6px 14px', background:'#06c', color:'#fff', textDecoration:'none', borderRadius:4, ...font, fontSize:13}}>Open Calibrator →</a>
       </div>
       <div style={{flex:1, overflow:'hidden', display:'flex'}}>
-        <div style={{width:420, borderRight:'1px solid #333', overflowY:'auto'}}>
+        <div style={{width:500, borderRight:'1px solid #333', overflowY:'auto'}}>
           <table style={{width:'100%', borderCollapse:'collapse'}}>
             <thead style={{position:'sticky', top:0}}>
               <tr>
@@ -139,18 +162,20 @@ export default function App() {
                 <SortHeader field="model">Model</SortHeader>
                 <SortHeader field="departure">From</SortHeader>
                 <SortHeader field="arrival">To</SortHeader>
+                <SortHeader field="flight_status">Status</SortHeader>
                 <SortHeader field="point_count">Pts</SortHeader>
               </tr>
             </thead>
             <tbody>
               {filteredFlights.map(f => (
                 <tr key={f.gufi} onClick={() => selectFlight(f)} style={{cursor:'pointer', background:selectedGufi===f.gufi?'#2a4a6a':'transparent', borderBottom:'1px solid #252535'}}>
-                  <td style={{padding:8}}><input type="radio" checked={selectedGufi===f.gufi} readOnly/></td>
-                  <td style={{padding:8, color:'#6cf', fontWeight:600}}>{f.callsign}</td>
-                  <td style={{padding:8, fontSize:12, color:'#aaa'}}>{f.model || '-'}</td>
-                  <td style={{padding:8}}>{f.departure||'-'}</td>
-                  <td style={{padding:8}}>{f.arrival||'-'}</td>
-                  <td style={{padding:8, textAlign:'right'}}>{f.point_count}</td>
+                  <td style={{padding:6}}><input type="radio" checked={selectedGufi===f.gufi} readOnly/></td>
+                  <td style={{padding:6, color:'#6cf', fontWeight:600}}>{f.callsign}</td>
+                  <td style={{padding:6, fontSize:11, color:'#aaa'}}>{f.model || '-'}</td>
+                  <td style={{padding:6}}>{f.departure||'-'}</td>
+                  <td style={{padding:6}}>{f.arrival||'-'}</td>
+                  <td style={{padding:6, color: statusColor(f.flight_status), fontSize:11}}>{f.flight_status || '-'}</td>
+                  <td style={{padding:6, textAlign:'right'}}>{f.point_count}</td>
                 </tr>
               ))}
             </tbody>
@@ -159,7 +184,11 @@ export default function App() {
         <div style={{flex:1, display:'flex', flexDirection:'column', overflow:'hidden'}}>
           {selectedFlight ? (<>
             <div style={{padding:14, background:'#2a2a4a', display:'flex', justifyContent:'space-between', alignItems:'center'}}>
-              <div><b style={{fontSize:22, color:'#6cf'}}>{selectedFlight.callsign}</b> <span style={{marginLeft:15, fontSize:14}}>{selectedFlight.manufacturer} {selectedFlight.model}</span></div>
+              <div>
+                <b style={{fontSize:22, color:'#6cf'}}>{selectedFlight.callsign}</b>
+                <span style={{marginLeft:15, fontSize:14}}>{selectedFlight.manufacturer} {selectedFlight.model}</span>
+                <span style={{marginLeft:15, padding:'2px 8px', borderRadius:4, fontSize:11, background:'#333', color: statusColor(selectedFlight.flight_status)}}>{selectedFlight.flight_status}</span>
+              </div>
               <div style={{fontSize:14}}>{selectedFlight.departure} → {selectedFlight.arrival} <span style={{color:'#888', marginLeft:15}}>{formatDuration(selectedFlight.duration_minutes)}</span></div>
             </div>
             <div style={{flex:1, overflow:'auto', background:'#12121f'}}>
@@ -222,8 +251,7 @@ export default function App() {
             </div>
             <div style={{padding:10, background:'#2a2a4a', color:'#888', fontSize:12, display:'flex', gap:20}}>
               <span>{selectedTrack.length} points</span>
-              <span>Accel: <span style={{color:'#8f8'}}>+</span>=speeding up, <span style={{color:'#f88'}}>-</span>=slowing</span>
-              <span>Turn: <span style={{color:'#ff8'}}>yellow</span>=&gt;3°/s</span>
+              <span>Last: {selectedFlight.last_altitude}ft @ {selectedFlight.last_speed}kts</span>
             </div>
           </>) : <div style={{flex:1, display:'flex', alignItems:'center', justifyContent:'center', color:'#555'}}>Select a flight</div>}
         </div>

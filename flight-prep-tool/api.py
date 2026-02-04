@@ -15,11 +15,43 @@ from config import AZURE_SERVER, AZURE_DATABASE, AZURE_USERNAME, AZURE_PASSWORD
 app = Flask(__name__)
 CORS(app)
 
+# Airport elevations (approximate) - add more as needed
+AIRPORT_ELEVATIONS = {
+    'KJFK': 13, 'KLGA': 21, 'KEWR': 18, 'KTEB': 9, 'KHPN': 439,
+    'KBDR': 10, 'KHVN': 14, 'KGON': 10, 'KDXR': 457, 'KOXC': 726,
+    'KSWF': 491, 'KCDW': 173, 'KMMU': 187, 'KFOK': 67, 'KISP': 99,
+    'KFRG': 80, 'KPOU': 165, 'KPNC': 13, 'KLOM': 302,
+}
+
 def get_conn():
     return pymssql.connect(
         server=AZURE_SERVER, user=AZURE_USERNAME, password=AZURE_PASSWORD,
         database=AZURE_DATABASE, tds_version='7.3', autocommit=True
     )
+
+def determine_flight_status(last_alt, last_speed, last_vs, arrival_airport):
+    """Determine if flight is Enroute, Approach, or Landed"""
+    if last_alt is None or last_speed is None:
+        return 'Unknown'
+    
+    # Get airport elevation (default 0 if unknown)
+    field_elev = AIRPORT_ELEVATIONS.get(arrival_airport, 0)
+    agl = last_alt - field_elev
+    
+    # Landed: Below 200 AGL and slow
+    if agl < 200 and last_speed < 50:
+        return 'Landed'
+    
+    # Approach: Descending, below 3000 AGL, moderate speed
+    if agl < 3000 and last_vs is not None and last_vs < -200:
+        return 'Approach'
+    
+    # Low altitude but not descending much - pattern/maneuvering
+    if agl < 2000 and last_speed < 150:
+        return 'Pattern'
+    
+    # Otherwise enroute
+    return 'Enroute'
 
 def calculate_derivatives(points):
     """Calculate acceleration, turn rate, and vertical acceleration for each point"""
@@ -37,7 +69,6 @@ def calculate_derivatives(points):
         prev = points[i-1]
         curr = points[i]
         
-        # Calculate time delta in seconds
         try:
             t1 = datetime.fromisoformat(prev['position_time'].replace('Z', '+00:00'))
             t2 = datetime.fromisoformat(curr['position_time'].replace('Z', '+00:00'))
@@ -45,20 +76,17 @@ def calculate_derivatives(points):
         except:
             continue
             
-        if dt <= 0 or dt > 120:  # Skip if bad time delta or gap > 2 min
+        if dt <= 0 or dt > 120:
             continue
         
-        # Horizontal acceleration (knots per second)
         if prev.get('speed') is not None and curr.get('speed') is not None:
             accel = (curr['speed'] - prev['speed']) / dt
             curr['accel'] = round(accel, 2)
         
-        # Turn rate (degrees per second)
         if prev.get('track') is not None and curr.get('track') is not None:
             try:
                 track1 = float(prev['track'])
                 track2 = float(curr['track'])
-                # Handle wrap-around (e.g., 350° to 10°)
                 diff = track2 - track1
                 if diff > 180:
                     diff -= 360
@@ -69,7 +97,6 @@ def calculate_derivatives(points):
             except:
                 pass
         
-        # Vertical acceleration (fpm per second)
         if prev.get('vertical_speed') is not None and curr.get('vertical_speed') is not None:
             vert_accel = (curr['vertical_speed'] - prev['vertical_speed']) / dt
             curr['vert_accel'] = round(vert_accel, 1)
@@ -102,6 +129,24 @@ def list_flights():
     cursor = conn.cursor(as_dict=True)
     cursor.execute(sql)
     flights = cursor.fetchall()
+    
+    # Get last point data for each flight to determine status
+    for f in flights:
+        cursor.execute("""
+            SELECT TOP 1 altitude, speed, vertical_speed
+            FROM flights WHERE gufi = %s
+            ORDER BY position_time DESC
+        """, (f['gufi'],))
+        last = cursor.fetchone()
+        if last:
+            f['last_altitude'] = last['altitude']
+            f['last_speed'] = last['speed']
+            f['flight_status'] = determine_flight_status(
+                last['altitude'], last['speed'], last['vertical_speed'], f['arrival']
+            )
+        else:
+            f['flight_status'] = 'Unknown'
+    
     conn.close()
     
     for f in flights:
@@ -134,7 +179,6 @@ def get_flight_track():
             if isinstance(v, datetime):
                 p[k] = v.isoformat()
     
-    # Calculate derivatives
     points = calculate_derivatives(points)
     
     return jsonify({'points': points})
@@ -159,6 +203,19 @@ def stage_flight():
     if not flight:
         conn.close()
         return jsonify({'error': 'Flight not found'}), 404
+    
+    # Get last point for status
+    cursor.execute("""
+        SELECT TOP 1 altitude, speed, vertical_speed
+        FROM flights WHERE gufi = %s
+        ORDER BY position_time DESC
+    """, (gufi,))
+    last = cursor.fetchone()
+    flight_status = 'Unknown'
+    if last:
+        flight_status = determine_flight_status(
+            last['altitude'], last['speed'], last['vertical_speed'], flight['arrival']
+        )
     
     callsign = flight['callsign']
     cursor.execute("SELECT manufacturer, model, aircraft_type FROM aircraft WHERE n_number = %s", (callsign,))
@@ -204,7 +261,13 @@ def stage_flight():
         """, (staged_id, *airports, start, end))
     
     conn.close()
-    return jsonify({'success': True, 'staged_flight_id': staged_id, 'callsign': callsign, 'aircraft': aircraft})
+    return jsonify({
+        'success': True, 
+        'staged_flight_id': staged_id, 
+        'callsign': callsign, 
+        'aircraft': aircraft,
+        'flight_status': flight_status
+    })
 
 @app.route('/api/staged', methods=['GET'])
 def get_staged():
@@ -220,6 +283,17 @@ def get_staged():
     
     cursor.execute("SELECT * FROM staged_track_points WHERE staged_flight_id = %s ORDER BY position_time", (flight['id'],))
     points = cursor.fetchall()
+    
+    # Determine flight status from last point
+    if points:
+        last = points[-1]
+        flight['flight_status'] = determine_flight_status(
+            last.get('altitude'), last.get('speed'), last.get('vertical_speed'), flight.get('arr_airport')
+        )
+        flight['last_altitude'] = last.get('altitude')
+        flight['last_speed'] = last.get('speed')
+    else:
+        flight['flight_status'] = 'Unknown'
     
     cursor.execute("SELECT * FROM staged_metars WHERE staged_flight_id = %s ORDER BY observation_time", (flight['id'],))
     metars = cursor.fetchall()
