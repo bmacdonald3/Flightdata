@@ -60,8 +60,8 @@ def compute_ground_speed(vx, vy):
         return None
     try:
         # vx/vy appear to be in ~0.22 knot units based on typical values
-        scale = 0.22
-        speed = math.sqrt(vx**2 + vy**2) * scale
+        # scale removed - vx/vy already in knots
+        speed = math.sqrt(vx**2 + vy**2)
         return round(speed)
     except:
         return None
