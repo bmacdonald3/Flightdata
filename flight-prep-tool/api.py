@@ -797,5 +797,64 @@ def get_aircraft_speeds():
     conn.close()
     return jsonify(result)
 
+
+@app.route('/api/scoring_attempts', methods=['GET'])
+def get_scoring_attempts():
+    """Get scoring attempts with optional filters"""
+    success_only = request.args.get('success') == 'true'
+    failed_only = request.args.get('failed') == 'true'
+    callsign = request.args.get('callsign')
+    airport = request.args.get('airport')
+    limit = int(request.args.get('limit', 100))
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    where = []
+    params = []
+    if success_only:
+        where.append("success = 1")
+    if failed_only:
+        where.append("success = 0")
+    if callsign:
+        where.append("callsign = %s")
+        params.append(callsign)
+    if airport:
+        where.append("arr_airport = %s")
+        params.append(airport)
+    
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    
+    cursor.execute(f"""
+        SELECT TOP {limit} gufi, callsign, ac_type, arr_airport, flight_date,
+               attempted_at, success, score_percentage, score_grade,
+               failure_reason, min_altitude, max_altitude, track_points
+        FROM scoring_attempts
+        {where_sql}
+        ORDER BY attempted_at DESC
+    """, tuple(params))
+    attempts = cursor.fetchall()
+    
+    cursor.execute("""
+        SELECT COUNT(*) as total,
+               SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as succeeded,
+               SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed
+        FROM scoring_attempts
+    """)
+    stats = cursor.fetchone()
+    conn.close()
+    
+    for a in attempts:
+        if a.get('flight_date'):
+            a['flight_date'] = a['flight_date'].isoformat()
+        if a.get('attempted_at'):
+            a['attempted_at'] = a['attempted_at'].isoformat()
+    
+    return jsonify({
+        'stats': stats,
+        'attempts': attempts
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
