@@ -8,8 +8,10 @@ import sys
 import os
 import math
 from datetime import datetime, timedelta
+import json
 
 sys.path.insert(0, os.path.expanduser('~'))
+from approach_scoring import calculate_approach_score, calc_approach_data, get_schema, SCORING_VERSION
 from config import AZURE_SERVER, AZURE_DATABASE, AZURE_USERNAME, AZURE_PASSWORD
 
 app = Flask(__name__)
@@ -471,6 +473,315 @@ def get_staged():
                 obj[k] = v.isoformat()
 
     return jsonify({'flight': flight, 'track': points, 'metars': metars, 'runways': runways})
+
+@app.route('/api/scoring_schema', methods=['GET'])
+def get_scoring_schema():
+    """Return current scoring schema for frontend/database sync"""
+    return jsonify(get_schema())
+
+
+@app.route('/api/score_approach', methods=['POST'])
+def score_approach():
+    """Score an approach and optionally save to database"""
+    data = request.json
+    gufi = data.get('gufi')
+    save = data.get('save', True)
+    
+    if not gufi:
+        return jsonify({'error': 'gufi required'}), 400
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    # Get flight info
+    cursor.execute("""
+        SELECT callsign, departure, arrival, MIN(position_time) as first_seen
+        FROM flights WHERE gufi = %s
+        GROUP BY callsign, departure, arrival
+    """, (gufi,))
+    flight = cursor.fetchone()
+    if not flight:
+        conn.close()
+        return jsonify({'error': 'Flight not found'}), 404
+    
+    # Get track points with derivatives
+    cursor.execute("""
+        SELECT position_time, latitude, longitude, altitude, speed, track, vertical_speed
+        FROM flights WHERE gufi = %s ORDER BY position_time
+    """, (gufi,))
+    track = cursor.fetchall()
+    track = calculate_derivatives(track)
+    
+    # Get aircraft info
+    cursor.execute("SELECT model FROM aircraft WHERE n_number = %s", (flight['callsign'],))
+    ac = cursor.fetchone()
+    ac_type = ac['model'] if ac else None
+    
+    # Get aircraft speeds
+    aircraft_speeds = None
+    if ac_type:
+        cursor.execute("SELECT * FROM aircraft_speeds WHERE ac_type = %s", (ac_type,))
+        aircraft_speeds = cursor.fetchone()
+    
+    # Get runway data
+    arr = flight['arrival']
+    cursor.execute("SELECT * FROM v_runway_lookup WHERE icao_id = %s", (arr,))
+    rwy_rows = cursor.fetchall()
+    
+    if not rwy_rows:
+        conn.close()
+        return jsonify({'error': f'No runway data for {arr}'}), 404
+    
+    # Find best runway based on final track
+    last_track = None
+    for p in reversed(track):
+        if p.get('track'):
+            last_track = float(p['track'])
+            break
+    
+    best_rwy = None
+    best_diff = 360
+    for row in rwy_rows:
+        for end in ['be', 're']:
+            lat = row.get(f'{end}_lat')
+            lon = row.get(f'{end}_lon')
+            opp_lat = row.get(f'{"re" if end == "be" else "be"}_lat')
+            opp_lon = row.get(f'{"re" if end == "be" else "be"}_lon')
+            
+            if not lat or not lon:
+                continue
+            
+            # Compute heading from threshold coords
+            computed_hdg = row.get(f'{end}_true_hdg') or 0
+            if opp_lat and opp_lon:
+                computed_hdg = _bearing(lat, lon, opp_lat, opp_lon)
+            
+            if last_track:
+                diff = abs(computed_hdg - last_track)
+                if diff > 180:
+                    diff = 360 - diff
+                if diff < best_diff:
+                    best_diff = diff
+                    best_rwy = {
+                        'runway_id': row.get(f'{end}_id'),
+                        'heading': round(computed_hdg, 2),
+                        'threshold_lat': lat,
+                        'threshold_lon': lon,
+                        'elevation': row.get(f'{end}_tdze') or row.get('airport_elevation')
+                    }
+    
+    if not best_rwy:
+        row = rwy_rows[0]
+        best_rwy = {
+            'runway_id': row.get('be_id'),
+            'heading': row.get('be_true_hdg'),
+            'threshold_lat': row.get('be_lat'),
+            'threshold_lon': row.get('be_lon'),
+            'elevation': row.get('be_tdze') or row.get('airport_elevation')
+        }
+    
+    # Get closest METAR
+    metar = None
+    if flight['first_seen']:
+        cursor.execute("""
+            SELECT TOP 1 m.wind_dir_degrees, m.wind_speed_kt, m.wind_gust_kt
+            FROM metar_observations m
+            JOIN airports a ON m.airport_id = a.airport_id
+            WHERE a.icao_code = %s AND m.observation_time <= %s
+            ORDER BY m.observation_time DESC
+        """, (arr, flight['first_seen']))
+        metar = cursor.fetchone()
+    
+    # Calculate approach data points
+    approach_pts = calc_approach_data(track, best_rwy, heading_filter=30)
+    
+    if not approach_pts:
+        conn.close()
+        return jsonify({'error': 'No approach points found (check heading filter)'}), 404
+    
+    # Calculate score using the standalone module
+    score = calculate_approach_score(approach_pts, best_rwy, metar, aircraft_speeds)
+    
+    if not score:
+        conn.close()
+        return jsonify({'error': 'Could not calculate score'}), 500
+    
+    # Save to database if requested
+    if save:
+        cursor.execute("DELETE FROM approach_scores WHERE gufi = %s", (gufi,))
+        cursor.execute("""
+            INSERT INTO approach_scores (
+                gufi, callsign, ac_type, arr_airport, runway_id, flight_date,
+                total_score, max_score, percentage, grade,
+                descent_score, descent_max, stabilized_score, stabilized_max,
+                centerline_score, centerline_max, turn_to_final_score, turn_to_final_max,
+                speed_control_score, speed_control_max, threshold_score, threshold_max,
+                stabilized_distance_nm, max_bank_angle, max_crosstrack_ft, avg_speed_kt, threshold_agl_ft,
+                severe_penalty_count, severe_penalties_json,
+                wind_dir, wind_speed_kt, wind_gust_kt, crosswind_kt,
+                score_details_json
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
+                %s, %s,
+                %s, %s, %s, %s,
+                %s
+            )
+        """, (
+            gufi, flight['callsign'], ac_type, arr, best_rwy['runway_id'],
+            flight['first_seen'].date() if flight['first_seen'] else None,
+            score['total'], score['maxTotal'], score['percentage'], score['grade'],
+            score['scores']['descent']['score'], score['scores']['descent']['max'],
+            score['scores']['stabilized']['score'], score['scores']['stabilized']['max'],
+            score['scores']['centerline']['score'], score['scores']['centerline']['max'],
+            score['scores']['turnToFinal']['score'], score['scores']['turnToFinal']['max'],
+            score['scores']['speedControl']['score'], score['scores']['speedControl']['max'],
+            score['scores']['thresholdCrossing']['score'], score['scores']['thresholdCrossing']['max'],
+            score['metrics'].get('stabilizedDist'),
+            score['metrics'].get('maxBank'),
+            score['metrics'].get('maxCrosstrack'),
+            score['metrics'].get('avgSpeed'),
+            score['metrics'].get('thresholdAgl'),
+            len(score['severePenalties']), json.dumps(score['severePenalties']),
+            score['wind']['dir'], score['wind']['speed'], score['wind']['gust'], score['wind']['crosswind'],
+            json.dumps(score)
+        ))
+    
+    conn.close()
+    
+    return jsonify({
+        'success': True,
+        'gufi': gufi,
+        'callsign': flight['callsign'],
+        'ac_type': ac_type,
+        'airport': arr,
+        'runway': best_rwy['runway_id'],
+        'score': score
+    })
+
+
+@app.route('/api/approach_rankings', methods=['GET'])
+def get_approach_rankings():
+    """Get approach score rankings and benchmarks"""
+    ac_type = request.args.get('ac_type')
+    airport = request.args.get('airport')
+    limit = int(request.args.get('limit', 50))
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    # Build query with optional filters
+    where_clauses = []
+    params = []
+    if ac_type:
+        where_clauses.append("ac_type = %s")
+        params.append(ac_type)
+    if airport:
+        where_clauses.append("arr_airport = %s")
+        params.append(airport)
+    
+    where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    # Get rankings
+    cursor.execute(f"""
+        SELECT TOP {limit} gufi, callsign, ac_type, arr_airport, runway_id, flight_date,
+               total_score, percentage, grade, severe_penalty_count
+        FROM approach_scores
+        {where_sql}
+        ORDER BY percentage DESC, total_score DESC
+    """, tuple(params))
+    rankings = cursor.fetchall()
+    
+    # Get stats for the filtered set
+    cursor.execute(f"""
+        SELECT COUNT(*) as total_flights,
+               AVG(CAST(percentage as FLOAT)) as avg_pct,
+               MIN(percentage) as min_pct,
+               MAX(percentage) as max_pct,
+               SUM(CASE WHEN severe_penalty_count > 0 THEN 1 ELSE 0 END) as severe_count
+        FROM approach_scores
+        {where_sql}
+    """, tuple(params))
+    stats = cursor.fetchone()
+    
+    # Get benchmarks by ac_type
+    cursor.execute("""
+        SELECT ac_type, 
+               COUNT(*) as flight_count, 
+               AVG(CAST(percentage as FLOAT)) as avg_pct,
+               MIN(percentage) as min_pct,
+               MAX(percentage) as max_pct
+        FROM approach_scores
+        WHERE ac_type IS NOT NULL
+        GROUP BY ac_type
+        HAVING COUNT(*) >= 3
+        ORDER BY avg_pct DESC
+    """)
+    benchmarks = cursor.fetchall()
+    
+    conn.close()
+    
+    # Format dates
+    for r in rankings:
+        if r.get('flight_date'):
+            r['flight_date'] = r['flight_date'].isoformat()
+    
+    return jsonify({
+        'stats': stats,
+        'rankings': rankings,
+        'benchmarks': benchmarks,
+        'scoringVersion': SCORING_VERSION
+    })
+
+
+@app.route('/api/my_score_history', methods=['GET'])
+def get_my_score_history():
+    """Get score history for a specific callsign"""
+    callsign = request.args.get('callsign')
+    limit = int(request.args.get('limit', 20))
+    
+    if not callsign:
+        return jsonify({'error': 'callsign required'}), 400
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    cursor.execute("""
+        SELECT TOP %s gufi, arr_airport, runway_id, flight_date,
+               total_score, percentage, grade, severe_penalty_count,
+               descent_score, stabilized_score, centerline_score,
+               turn_to_final_score, speed_control_score, threshold_score
+        FROM approach_scores
+        WHERE callsign = %s
+        ORDER BY flight_date DESC
+    """, (limit, callsign))
+    history = cursor.fetchall()
+    
+    # Get personal stats
+    cursor.execute("""
+        SELECT COUNT(*) as total_flights,
+               AVG(CAST(percentage as FLOAT)) as avg_pct,
+               MAX(percentage) as best_pct,
+               MIN(percentage) as worst_pct
+        FROM approach_scores
+        WHERE callsign = %s
+    """, (callsign,))
+    stats = cursor.fetchone()
+    
+    conn.close()
+    
+    for h in history:
+        if h.get('flight_date'):
+            h['flight_date'] = h['flight_date'].isoformat()
+    
+    return jsonify({
+        'callsign': callsign,
+        'stats': stats,
+        'history': history
+    })
+
 
 @app.route('/api/aircraft_speeds', methods=['GET'])
 def get_aircraft_speeds():
