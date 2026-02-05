@@ -332,3 +332,80 @@ curl -s "http://localhost:5002/api/runways?airport=KXXX" | python3 -m json.tool
 | Feb 2026 | Bank angle and turn rate calculations |
 | Feb 2026 | Severe penalty system (CFIT/stall risk) |
 | Feb 2026 | Standalone scoring module for batch processing |
+
+---
+
+## Flight Preprocessing
+
+### Ghost Flight Detection (`flight_preprocessor.py`)
+
+Filters out flights where radar/ADS-B data is incomplete:
+
+| Check | Threshold | Reason |
+|-------|-----------|--------|
+| Min AGL | > 3000ft | Never descended to approach altitude |
+| Alt Range | < 500ft | No significant descent (overflight) |
+| Last Point AGL | > 2000ft | Lost radar before approach |
+| Final Speeds | > 200kts | Jet not slowing for approach |
+
+### Touch-and-Go Detection
+
+Identifies pattern work by finding altitude valleys:
+1. Smooth altitude data (3-point moving average)
+2. Find local minima below 500ft AGL
+3. Merge valleys within 60 seconds
+4. Split into separate legs if climb >300ft between valleys
+
+Each leg is scored independently with gufi suffix (`gufi#leg1`, `gufi#leg2`, etc.)
+
+### Track Truncation
+
+Removes non-approach portions:
+- Points > 15nm from threshold
+- Points > 5000ft AGL at start
+- Flags added: `[TRUNCATED: Removed N cruise points]`
+
+### Preprocessing Flags
+
+All preprocessing actions are logged in `scoring_attempts.failure_reason`:
+- `GHOST: <reason>` - Flight filtered as ghost
+- `PATTERN: N legs detected` - Touch-and-go split
+- `TRUNCATED: Removed N points` - Cruise/high altitude removed
+
+---
+
+## Batch Scoring
+
+### Usage
+```bash
+cd ~/flight-prep-tool
+
+# Score last 7 days, up to 100 flights
+python3 batch_score.py --days 7 --limit 100
+
+# Verbose output
+python3 batch_score.py --days 7 --limit 50 --verbose
+
+# Rescore already-scored flights
+python3 batch_score.py --days 30 --rescore
+
+# Filter by callsign
+python3 batch_score.py --callsign N831PM --days 90
+
+# Adjust ghost detection threshold
+python3 batch_score.py --min-alt 1500
+```
+
+### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `scoring_attempts` | Logs all scoring attempts (success + failure with reasons) |
+| `approach_scores` | Stores successful scores with full breakdown |
+
+### Performance Notes
+
+- Ghost detection is fast (altitude checks only)
+- T&G detection scans altitude array once
+- Preprocessing is redone each run (no persistent cache yet)
+- `--rescore` flag forces reprocessing of already-attempted flights
