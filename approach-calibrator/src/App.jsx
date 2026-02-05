@@ -198,6 +198,243 @@ function calcApproachData(track, runway, glideslopeAngle, tch, headingFilter = 3
   })
 }
 
+// Approach Scoring System
+function calculateApproachScore(approachPoints, runway, metar, aircraftSpeeds) {
+  if (!approachPoints.length || !runway) return null
+  
+  const scores = {
+    descent: { score: 0, max: 20, details: [], deductions: [] },
+    stabilized: { score: 0, max: 20, details: [], deductions: [] },
+    centerline: { score: 0, max: 20, details: [], deductions: [] },
+    turnToFinal: { score: 0, max: 15, details: [], deductions: [] },
+    speedControl: { score: 0, max: 15, details: [], deductions: [] },
+    thresholdCrossing: { score: 0, max: 10, details: [], deductions: [] }
+  }
+  
+  const severePenalties = []
+  
+  const tdze = parseFloat(runway.elevation) || 0
+  const rwyHdg = parseFloat(runway.heading)
+  const windDir = metar?.wind_dir_degrees
+  const windSpd = metar?.wind_speed_kt || 0
+  const windGust = metar?.wind_gust_kt || 0
+  const targetSpeed = aircraftSpeeds?.appr_speed || 70
+  const dirtyStall = aircraftSpeeds?.dirty_stall || 45
+  
+  // Calculate crosswind component
+  let crosswindComponent = 0
+  if (windDir != null) {
+    const windAngle = Math.abs(windDir - rwyHdg)
+    const adjustedAngle = windAngle > 180 ? 360 - windAngle : windAngle
+    crosswindComponent = Math.abs(Math.sin(adjustedAngle * Math.PI / 180) * windSpd)
+  }
+  
+  // Sort points by distance (far to near)
+  const sorted = [...approachPoints].sort((a, b) => b.distNm - a.distNm)
+  const lastPoint = sorted[sorted.length - 1]
+  
+  // ============ SEVERE PENALTY CHECKS ============
+  // Below glidepath when below 500ft AGL
+  const belowGsBelow500 = sorted.filter(p => p.agl < 500 && p.gsDevFt < -50)
+  if (belowGsBelow500.length > 0) {
+    const worstDev = Math.min(...belowGsBelow500.map(p => p.gsDevFt))
+    severePenalties.push({
+      type: 'CFIT RISK',
+      detail: `${belowGsBelow500.length} pts below glideslope when <500ft AGL (worst: ${worstDev.toFixed(0)}ft low)`,
+      penalty: 20
+    })
+  }
+  
+  // Within 10kts of stall speed when above 50ft AGL
+  const nearStall = sorted.filter(p => p.agl > 50 && p.speed != null && p.speed < dirtyStall + 10)
+  if (nearStall.length > 0) {
+    const lowestSpeed = Math.min(...nearStall.map(p => p.speed))
+    const margin = lowestSpeed - dirtyStall
+    severePenalties.push({
+      type: 'STALL RISK',
+      detail: `${nearStall.length} pts within 10kts of stall (${lowestSpeed}kt, Vs ${dirtyStall}kt, margin ${margin.toFixed(0)}kt)`,
+      penalty: 20
+    })
+  }
+  
+  // 1. DESCENT QUALITY (20 pts)
+  scores.descent.score = 20
+  const gsDeviations = sorted.filter(p => p.gsDevFt != null).map(p => p.gsDevFt)
+  const avgGsDev = gsDeviations.length ? gsDeviations.reduce((a,b) => a+b, 0) / gsDeviations.length : 0
+  const belowGsCount = gsDeviations.filter(d => d < -100).length
+  const wayBelowCount = gsDeviations.filter(d => d < -200).length
+  const aboveGsCount = gsDeviations.filter(d => d > 150).length
+  
+  if (wayBelowCount > 0) {
+    const deduct = Math.min(10, wayBelowCount * 2)
+    scores.descent.score -= deduct
+    scores.descent.deductions.push(`-${deduct}: ${wayBelowCount} pts >200ft below GS (dangerous)`)
+  }
+  if (belowGsCount > wayBelowCount) {
+    const deduct = Math.min(5, (belowGsCount - wayBelowCount))
+    scores.descent.score -= deduct
+    scores.descent.deductions.push(`-${deduct}: ${belowGsCount - wayBelowCount} pts 100-200ft below GS`)
+  }
+  if (aboveGsCount > 3) {
+    const deduct = Math.min(3, Math.floor((aboveGsCount - 3) / 2))
+    scores.descent.score -= deduct
+    scores.descent.deductions.push(`-${deduct}: ${aboveGsCount} pts >150ft above GS`)
+  }
+  
+  const climbingPts = sorted.filter(p => p.vs != null && p.vs > 200).length
+  if (climbingPts > 0) {
+    const deduct = Math.min(5, climbingPts)
+    scores.descent.score -= deduct
+    scores.descent.deductions.push(`-${deduct}: ${climbingPts} pts climbing on approach`)
+  }
+  scores.descent.details.push(`Avg GS dev: ${avgGsDev.toFixed(0)}ft, Below: ${belowGsCount}, Above: ${aboveGsCount}`)
+  scores.descent.score = Math.max(0, scores.descent.score)
+  
+  // 2. STABILIZED APPROACH (20 pts)
+  scores.stabilized.score = 20
+  let stabilizedDist = 0
+  for (const p of sorted) {
+    const onSpeed = p.speed && Math.abs(p.speed - targetSpeed) <= 10
+    const onGs = p.gsDevFt != null && Math.abs(p.gsDevFt) < 150
+    const onCenterline = Math.abs(p.crossTrackFt) < 300
+    if (onSpeed && onGs && onCenterline) {
+      stabilizedDist = p.distNm
+      break
+    }
+  }
+  scores.stabilized.details.push(`Stabilized at ${stabilizedDist.toFixed(2)} nm`)
+  if (stabilizedDist < 1) {
+    scores.stabilized.score -= 15
+    scores.stabilized.deductions.push(`-15: Not stabilized until <1nm (go-around criteria)`)
+  } else if (stabilizedDist < 2) {
+    scores.stabilized.score -= 10
+    scores.stabilized.deductions.push(`-10: Stabilized late (${stabilizedDist.toFixed(1)}nm)`)
+  } else if (stabilizedDist < 3) {
+    scores.stabilized.score -= 5
+    scores.stabilized.deductions.push(`-5: Stabilized at ${stabilizedDist.toFixed(1)}nm (ideal >3nm)`)
+  }
+  scores.stabilized.score = Math.max(0, scores.stabilized.score)
+  
+  // 3. CENTERLINE TRACKING (20 pts)
+  scores.centerline.score = 20
+  const crosswindMargin = crosswindComponent * 20
+  const crossTracks = sorted.map(p => Math.abs(p.crossTrackFt))
+  const avgCross = crossTracks.reduce((a,b) => a+b, 0) / crossTracks.length
+  const maxCross = Math.max(...crossTracks)
+  const adjustedMax = Math.max(0, maxCross - crosswindMargin)
+  
+  if (adjustedMax > 500) {
+    scores.centerline.score -= 10
+    scores.centerline.deductions.push(`-10: Max deviation ${maxCross.toFixed(0)}ft`)
+  } else if (adjustedMax > 300) {
+    scores.centerline.score -= 5
+    scores.centerline.deductions.push(`-5: Max deviation ${maxCross.toFixed(0)}ft`)
+  }
+  if (avgCross > 200) {
+    scores.centerline.score -= 5
+    scores.centerline.deductions.push(`-5: Avg deviation ${avgCross.toFixed(0)}ft`)
+  } else if (avgCross > 100) {
+    scores.centerline.score -= 2
+    scores.centerline.deductions.push(`-2: Avg deviation ${avgCross.toFixed(0)}ft`)
+  }
+  scores.centerline.details.push(`Avg: ${avgCross.toFixed(0)}ft, Max: ${maxCross.toFixed(0)}ft, XW adj: ${crosswindMargin.toFixed(0)}ft`)
+  scores.centerline.score = Math.max(0, scores.centerline.score)
+  
+  // 4. TURN TO FINAL (15 pts)
+  scores.turnToFinal.score = 15
+  const steepBanks = sorted.filter(p => p.bankAngle > 30)
+  const maxBank = sorted.length ? Math.max(...sorted.map(p => p.bankAngle || 0)) : 0
+  
+  if (steepBanks.length > 0) {
+    const deduct = Math.min(10, steepBanks.length * 2)
+    scores.turnToFinal.score -= deduct
+    scores.turnToFinal.deductions.push(`-${deduct}: ${steepBanks.length} pts with bank >30° (max ${maxBank.toFixed(1)}°)`)
+  }
+  
+  let crossings = 0
+  let prevSide = null
+  for (const p of sorted) {
+    const side = p.crossTrackFt > 50 ? 'R' : p.crossTrackFt < -50 ? 'L' : null
+    if (side && prevSide && side !== prevSide) crossings++
+    if (side) prevSide = side
+  }
+  if (crossings > 1) {
+    const deduct = Math.min(5, (crossings - 1) * 2)
+    scores.turnToFinal.score -= deduct
+    scores.turnToFinal.deductions.push(`-${deduct}: ${crossings} centerline crossings (S-turns)`)
+  }
+  scores.turnToFinal.details.push(`Max bank: ${maxBank.toFixed(1)}°, CL crossings: ${crossings}`)
+  scores.turnToFinal.score = Math.max(0, scores.turnToFinal.score)
+  
+  // 5. SPEED CONTROL (15 pts)
+  scores.speedControl.score = 15
+  const gustMargin = windGust > 0 ? windGust / 2 : 0
+  const speedTolerance = 5 + gustMargin
+  const speeds = sorted.filter(p => p.speed != null).map(p => p.speed)
+  const avgSpeed = speeds.length ? speeds.reduce((a,b) => a+b, 0) / speeds.length : targetSpeed
+  const speedDevs = speeds.map(s => Math.abs(s - targetSpeed))
+  const maxSpeedDev = speedDevs.length ? Math.max(...speedDevs) : 0
+  const outOfTolerance = speeds.filter(s => Math.abs(s - targetSpeed) > speedTolerance).length
+  
+  if (maxSpeedDev > 15) {
+    scores.speedControl.score -= 8
+    scores.speedControl.deductions.push(`-8: Speed varied ${maxSpeedDev.toFixed(0)}kt from target`)
+  } else if (maxSpeedDev > 10) {
+    scores.speedControl.score -= 4
+    scores.speedControl.deductions.push(`-4: Speed varied ${maxSpeedDev.toFixed(0)}kt from target`)
+  }
+  if (outOfTolerance > speeds.length * 0.3) {
+    scores.speedControl.score -= 4
+    scores.speedControl.deductions.push(`-4: ${outOfTolerance}/${speeds.length} pts outside ±${speedTolerance.toFixed(0)}kt`)
+  }
+  scores.speedControl.details.push(`Target: ${targetSpeed}kt ±${speedTolerance.toFixed(1)}kt, Avg: ${avgSpeed.toFixed(0)}kt`)
+  scores.speedControl.score = Math.max(0, scores.speedControl.score)
+  
+  // 6. THRESHOLD CROSSING (10 pts)
+  scores.thresholdCrossing.score = 10
+  const nearThreshold = sorted.filter(p => p.distNm < 0.15)
+  const thresholdAgl = nearThreshold.length ? nearThreshold[nearThreshold.length - 1].agl : null
+  
+  if (thresholdAgl != null) {
+    scores.thresholdCrossing.details.push(`Crossed at ${thresholdAgl.toFixed(0)}ft AGL (target 50ft)`)
+    if (thresholdAgl < 20) {
+      scores.thresholdCrossing.score -= 8
+      scores.thresholdCrossing.deductions.push(`-8: Too low! ${thresholdAgl.toFixed(0)}ft AGL`)
+    } else if (thresholdAgl < 35) {
+      scores.thresholdCrossing.score -= 4
+      scores.thresholdCrossing.deductions.push(`-4: Low crossing ${thresholdAgl.toFixed(0)}ft AGL`)
+    } else if (thresholdAgl > 100) {
+      scores.thresholdCrossing.score -= 5
+      scores.thresholdCrossing.deductions.push(`-5: High crossing ${thresholdAgl.toFixed(0)}ft (long landing)`)
+    } else if (thresholdAgl > 75) {
+      scores.thresholdCrossing.score -= 2
+      scores.thresholdCrossing.deductions.push(`-2: Slightly high ${thresholdAgl.toFixed(0)}ft`)
+    }
+  } else {
+    scores.thresholdCrossing.details.push(`No data near threshold`)
+    scores.thresholdCrossing.score = 0
+    scores.thresholdCrossing.deductions.push(`-10: No threshold crossing data`)
+  }
+  scores.thresholdCrossing.score = Math.max(0, scores.thresholdCrossing.score)
+  
+  // Calculate total with severe penalties
+  let total = Object.values(scores).reduce((sum, s) => sum + s.score, 0)
+  const maxTotal = Object.values(scores).reduce((sum, s) => sum + s.max, 0)
+  const severePenaltyTotal = severePenalties.reduce((sum, p) => sum + p.penalty, 0)
+  total = Math.max(0, total - severePenaltyTotal)
+  
+  return {
+    scores,
+    severePenalties,
+    total,
+    maxTotal,
+    percentage: Math.round(total / maxTotal * 100),
+    grade: total >= 90 ? 'A' : total >= 80 ? 'B' : total >= 70 ? 'C' : total >= 60 ? 'D' : 'F',
+    wind: { dir: windDir, speed: windSpd, gust: windGust, crosswind: crosswindComponent.toFixed(0) },
+    aircraftData: { targetSpeed, dirtyStall }
+  }
+}
+
 function CalibratorTab({ staged, formatTime, arrMetars }) {
   const runways = staged?.runways || [], track = staged?.track || [], flight = staged?.flight || {}
   const [selectedRunway, setSelectedRunway] = useState(null)
@@ -388,6 +625,13 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
     }
   }, [approachPoints])
 
+  // Calculate approach score
+  const latestMetar = arrMetars?.[arrMetars.length - 1]
+  const approachScore = useMemo(() => 
+    calculateApproachScore(approachPoints, selectedRunway, latestMetar, aircraftSpeeds),
+    [approachPoints, selectedRunway, latestMetar, aircraftSpeeds]
+  )
+
   const fpmSlopeAlt = (distNm) => (selectedRunway?.elevation || 0) + tch + 500 * distNm / (approachSpeed / 60)
 
   const W = 900, H = 320, PAD = 60
@@ -502,6 +746,47 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
                 <div><span style={{ color: '#888' }}>GS ±5kt:</span> <b style={{ color: metrics.gsOutOfRange > 0 ? '#ff8' : '#8f8' }}>{metrics.gsOutOfRange} pts</b></div>
                 <div><span style={{ color: '#888' }}>Max Accel:</span> <b>{metrics.maxAccel ?? '-'} kt/s</b></div>
                 <div><span style={{ color: '#888' }}>Points:</span> <b>{metrics.pointCount}</b></div>
+              </div>
+            </div>
+          )}
+          {approachScore && (
+            <div style={{ background: '#1a1a2e', padding: 16, borderRadius: 8, border: approachScore.severePenalties.length > 0 ? '2px solid #f44' : '1px solid #444' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <h4 style={{ margin: 0, color: '#6cf' }}>Approach Score</h4>
+                <div style={{ fontSize: 24, fontWeight: 'bold', color: approachScore.severePenalties.length > 0 ? '#f44' : approachScore.percentage >= 80 ? '#8f8' : approachScore.percentage >= 60 ? '#ff8' : '#f88' }}>
+                  {approachScore.total}/{approachScore.maxTotal} ({approachScore.percentage}%) <span style={{ fontSize: 18 }}>{approachScore.grade}</span>
+                </div>
+              </div>
+              {approachScore.severePenalties.length > 0 && (
+                <div style={{ background: '#400', padding: 10, borderRadius: 6, marginBottom: 12, border: '1px solid #f44' }}>
+                  <div style={{ color: '#f88', fontWeight: 'bold', marginBottom: 6 }}>⚠️ SEVERE PENALTIES</div>
+                  {approachScore.severePenalties.map((p, i) => (
+                    <div key={i} style={{ color: '#faa', fontSize: 12, marginBottom: 4 }}>
+                      <b>{p.type}:</b> {p.detail} <span style={{ color: '#f66' }}>(-{p.penalty} pts)</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: '#888', marginBottom: 8 }}>
+                Wind: {approachScore.wind.dir ?? '-'}° @ {approachScore.wind.speed}kt {approachScore.wind.gust > 0 ? `G${approachScore.wind.gust}` : ''} | XW: {approachScore.wind.crosswind}kt | Target: {approachScore.aircraftData.targetSpeed}kt | Vs: {approachScore.aircraftData.dirtyStall}kt
+              </div>
+              <div style={{ display: 'grid', gap: 8, fontSize: 12 }}>
+                {Object.entries(approachScore.scores).map(([key, data]) => (
+                  <div key={key} style={{ background: '#252540', padding: 8, borderRadius: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{key.replace(/([A-Z])/g, ' $1').trim()}</span>
+                      <span style={{ color: data.score === data.max ? '#8f8' : data.score >= data.max * 0.7 ? '#ff8' : '#f88' }}>
+                        {data.score}/{data.max}
+                      </span>
+                    </div>
+                    <div style={{ color: '#888', fontSize: 10 }}>{data.details.join(' | ')}</div>
+                    {data.deductions.length > 0 && (
+                      <div style={{ color: '#f88', fontSize: 10, marginTop: 4 }}>
+                        {data.deductions.map((d, i) => <div key={i}>{d}</div>)}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           )}
