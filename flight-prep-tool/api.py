@@ -472,5 +472,19 @@ def get_staged():
 
     return jsonify({'flight': flight, 'track': points, 'metars': metars, 'runways': runways})
 
+@app.route('/api/aircraft_speeds', methods=['GET'])
+def get_aircraft_speeds():
+    ac_type = request.args.get('ac_type')
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    if ac_type:
+        cursor.execute("SELECT * FROM aircraft_speeds WHERE ac_type = %s", (ac_type,))
+        result = cursor.fetchone()
+    else:
+        cursor.execute("SELECT * FROM aircraft_speeds ORDER BY ac_type")
+        result = cursor.fetchall()
+    conn.close()
+    return jsonify(result)
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
