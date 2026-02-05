@@ -146,7 +146,7 @@ function findBestRunway(runways, track) {
   return best
 }
 
-function calcApproachData(track, runway, glideslopeAngle, tch) {
+function calcApproachData(track, runway, glideslopeAngle, tch, headingFilter = 30) {
   if (!runway || !track.length) return []
   const thLat = parseFloat(runway.threshold_lat), thLon = parseFloat(runway.threshold_lon)
   const hdg = parseFloat(runway.heading), elev = parseFloat(runway.elevation)
@@ -167,14 +167,20 @@ function calcApproachData(track, runway, glideslopeAngle, tch) {
     const crossTrackFt = distNm * Math.sin(angleDiff * Math.PI / 180) * 6076.12
     const alt = p.altitude || 0, agl = alt - elev
     const idealAlt = elev + tch + (alongTrackNm * 6076.12 * Math.tan(gs * Math.PI / 180))
-    return { idx, distNm: alongTrackNm, crossTrackFt, altitude: alt, agl, idealAlt, gsDevFt: alt - idealAlt, speed: p.speed, vs: p.vertical_speed, track: p.track, time: p.position_time, lat: pLat, lon: pLon }
+    // Calculate bank angle from turn rate and speed: bank = atan(V * omega / g)
+    // V in ft/s = speed * 1.687, omega in rad/s = turn_rate * pi/180, g = 32.2 ft/s²
+    const turnRate = p.turn_rate || 0
+    const speedFtS = (p.speed || 0) * 1.687
+    const omegaRadS = turnRate * Math.PI / 180
+    const bankAngle = Math.abs(Math.atan(speedFtS * omegaRadS / 32.2) * 180 / Math.PI)
+    return { idx, distNm: alongTrackNm, crossTrackFt, altitude: alt, agl, idealAlt, gsDevFt: alt - idealAlt, speed: p.speed, vs: p.vertical_speed, track: p.track, time: p.position_time, lat: pLat, lon: pLon, turnRate, accel: p.accel, bankAngle }
   }).filter(p => {
     if (!p) return false
     const inbound = parseFloat(runway.heading)
     if (p.track != null) {
       let diff = Math.abs(parseFloat(p.track) - inbound)
       if (diff > 180) diff = 360 - diff
-      if (diff > 30) return false
+      if (diff > headingFilter) return false
     }
     return p.distNm > 0 && p.distNm < 10
   })
@@ -278,6 +284,7 @@ function VisualizationTab({ staged, arrMetars }) {
   const [approachSpeed, setApproachSpeed] = useState(80)
   const [hoveredPoint, setHoveredPoint] = useState(null)
   const [maxDist, setMaxDist] = useState(10)
+  const [headingFilter, setHeadingFilter] = useState(30)
 
   const finalTrack = useMemo(() => {
     const last = [...track].reverse().find(p => p.track != null)
@@ -329,14 +336,46 @@ function VisualizationTab({ staged, arrMetars }) {
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#ff8', borderRadius: '50%', marginRight: 6 }}></span>Descending</span>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f88', borderRadius: '50%', marginRight: 6 }}></span>Steep</span>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f8f', borderRadius: '50%', marginRight: 6 }}></span>Climbing</span>
+            <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f0f', borderRadius: '50%', marginRight: 6 }}></span>Bank &gt;30°</span>
           <span style={{ marginLeft: 'auto', color: '#666' }}>{validTrack.length} points</span>
         </div>
       </div>
     )
   }
 
-  const approachData = useMemo(() => calcApproachData(track, selectedRunway, glideslopeAngle, tch), [track, selectedRunway, glideslopeAngle, tch])
+  const approachData = useMemo(() => calcApproachData(track, selectedRunway, glideslopeAngle, tch, headingFilter), [track, selectedRunway, glideslopeAngle, tch, headingFilter])
   const approachPoints = approachData.filter(p => p.distNm > -0.5 && p.distNm < maxDist)
+
+  // Approach metrics
+  const metrics = useMemo(() => {
+    if (approachPoints.length === 0) return null
+    const first = approachPoints[0]
+    const speeds = approachPoints.filter(p => p.speed != null).map(p => p.speed)
+    const vSpeeds = approachPoints.filter(p => p.vs != null && p.vs < 0).map(p => p.vs)
+    const crossTracks = approachPoints.map(p => Math.abs(p.crossTrackFt))
+    const bankAngles = approachPoints.filter(p => p.bankAngle != null).map(p => p.bankAngle)
+    const accels = approachPoints.filter(p => p.accel != null).map(p => Math.abs(p.accel))
+    const steepBankCount = bankAngles.filter(b => b > 30).length
+    const gsOutOfRange = speeds.length ? speeds.filter(s => Math.abs(s - speeds.reduce((a,b)=>a+b,0)/speeds.length) > 5).length : 0
+    return {
+      startDist: first.distNm,
+      startAlt: first.altitude,
+      startAgl: first.agl,
+      avgGs: speeds.length ? Math.round(speeds.reduce((a,b) => a+b, 0) / speeds.length) : null,
+      minGs: speeds.length ? Math.min(...speeds) : null,
+      maxGs: speeds.length ? Math.max(...speeds) : null,
+      avgVs: vSpeeds.length ? Math.round(vSpeeds.reduce((a,b) => a+b, 0) / vSpeeds.length) : null,
+      minVs: vSpeeds.length ? Math.min(...vSpeeds) : null,
+      maxVs: vSpeeds.length ? Math.max(...vSpeeds) : null,
+      maxCrossTrack: crossTracks.length ? Math.round(Math.max(...crossTracks)) : null,
+      maxBankAngle: bankAngles.length ? Math.round(Math.max(...bankAngles)) : null,
+      steepBankCount,
+      maxAccel: accels.length ? Math.max(...accels).toFixed(2) : null,
+      gsOutOfRange,
+      pointCount: approachPoints.length
+    }
+  }, [approachPoints])
+
   const fpmSlopeAlt = (distNm) => (selectedRunway?.elevation || 0) + tch + 500 * distNm / (approachSpeed / 60)
 
   const W = 900, H = 320, PAD = 60
@@ -348,7 +387,7 @@ function VisualizationTab({ staged, arrMetars }) {
   const crossTrackValues = approachPoints.map(p => Math.abs(p.crossTrackFt))
   const maxCross = Math.max(500, Math.min(5000, Math.max(...crossTrackValues) * 1.2)) || 1500
   const yScaleLat = (ft) => H/2 - (ft / maxCross) * (H/2 - PAD)
-  const getPointColor = (p) => !p.vs ? '#888' : p.vs > 200 ? '#f8f' : p.vs < -700 ? '#f88' : Math.abs(p.vs) < 100 ? '#8f8' : '#ff8'
+  const getPointColor = (p) => p.bankAngle > 30 ? '#f0f' : !p.vs ? '#888' : p.vs > 200 ? '#f8f' : p.vs < -700 ? '#f88' : Math.abs(p.vs) < 100 ? '#8f8' : '#ff8'
 
   const step = maxDist <= 2 ? 0.25 : maxDist <= 5 ? 0.5 : 1
   const distGridLines = []; for (let d = 0; d <= maxDist; d += step) distGridLines.push(d)
@@ -364,7 +403,7 @@ function VisualizationTab({ staged, arrMetars }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, position: 'relative' }}>
       <div style={{ background: '#333', padding: 10, borderRadius: 6, fontSize: 12, minHeight: 20, visibility: hoveredPoint ? 'visible' : 'hidden' }}>
-        {hoveredPoint ? <><b>Point {hoveredPoint.idx + 1}</b> | Dist: {hoveredPoint.distNm.toFixed(2)} nm | Alt: {hoveredPoint.agl.toFixed(0)} AGL ({hoveredPoint.altitude} MSL) | Cross: {hoveredPoint.crossTrackFt.toFixed(0)}ft | Spd: {hoveredPoint.speed} kts | VS: {hoveredPoint.vs} fpm</> : <span>&nbsp;</span>}
+        {hoveredPoint ? <><b>Point {hoveredPoint.idx + 1}</b> | Dist: {hoveredPoint.distNm.toFixed(2)} nm | Alt: {hoveredPoint.agl.toFixed(0)} AGL ({hoveredPoint.altitude} MSL) | Cross: {hoveredPoint.crossTrackFt.toFixed(0)}ft | Spd: {hoveredPoint.speed} kts | VS: {hoveredPoint.vs} fpm | Bank: <span style={{color: hoveredPoint.bankAngle > 30 ? '#f0f' : 'inherit'}}>{hoveredPoint.bankAngle?.toFixed(1) ?? '-'}°</span> | Turn: {hoveredPoint.turnRate?.toFixed(2) ?? '-'}°/s</> : <span>&nbsp;</span>}
       </div>
 
       <div style={{ background: '#2a2a4a', padding: 16, borderRadius: 8, display: 'flex', flexWrap: 'wrap', gap: 20, alignItems: 'center' }}>
@@ -381,6 +420,10 @@ function VisualizationTab({ staged, arrMetars }) {
           <span>Zoom:</span>
           <input type="range" min="1" max="10" step="0.5" value={maxDist} onChange={e => setMaxDist(parseFloat(e.target.value))} style={{ width: 100 }} />
           <span style={{ color: '#6cf', minWidth: 45 }}>{maxDist} nm</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>Track ±</span>
+          <input type="number" min="5" max="90" value={headingFilter} onChange={e => setHeadingFilter(parseInt(e.target.value) || 30)} style={{ ...inputStyle, width: 50 }} />°
         </div>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: '#888' }}>{selectedRunway && `${flight.arr_airport} RWY ${selectedRunway.runway_id} | TDZE ${selectedRunway.elevation}ft | Hdg ${selectedRunway.heading}°`}</div>
       </div>
@@ -419,11 +462,34 @@ function VisualizationTab({ staged, arrMetars }) {
               <text x={15} y={H/2} fill="#888" fontSize={11} textAnchor="middle" transform={`rotate(-90,15,${H/2})`}>Offset from Centerline (ft)</text>
             </svg>
           </div>
+          {metrics && (
+            <div style={{ background: '#1a1a2e', padding: 16, borderRadius: 8, border: '1px solid #333' }}>
+              <h4 style={{ margin: '0 0 12px 0', color: '#6cf' }}>Approach Metrics</h4>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 24px', fontSize: 13 }}>
+                <div><span style={{ color: '#888' }}>First Point:</span> <b>{metrics.startDist?.toFixed(2)} nm</b></div>
+                <div><span style={{ color: '#888' }}>Altitude:</span> <b>{metrics.startAlt} MSL</b> ({metrics.startAgl?.toFixed(0)} AGL)</div>
+                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}><span style={{ color: '#888' }}>Groundspeed</span></div>
+                <div><span style={{ color: '#888' }}>Avg:</span> <b>{metrics.avgGs ?? '-'} kts</b></div>
+                <div><span style={{ color: '#888' }}>Min/Max:</span> <b>{metrics.minGs ?? '-'} / {metrics.maxGs ?? '-'} kts</b></div>
+                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}><span style={{ color: '#888' }}>Vertical Speed</span></div>
+                <div><span style={{ color: '#888' }}>Avg:</span> <b>{metrics.avgVs ?? '-'} fpm</b></div>
+                <div><span style={{ color: '#888' }}>Min/Max:</span> <b>{metrics.minVs ?? '-'} / {metrics.maxVs ?? '-'} fpm</b></div>
+                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}><span style={{ color: '#888' }}>Lateral</span></div>
+                <div><span style={{ color: '#888' }}>Max Deviation:</span> <b>{metrics.maxCrossTrack ?? '-'} ft</b></div>
+                <div><span style={{ color: '#888' }}>Max Bank:</span> <b style={{ color: metrics.maxBankAngle > 30 ? '#f88' : 'inherit' }}>{metrics.maxBankAngle ?? '-'}°</b>{metrics.steepBankCount > 0 && <span style={{ color: '#f88' }}> ({metrics.steepBankCount} steep)</span>}</div>
+                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #333', paddingTop: 8, marginTop: 4 }}><span style={{ color: '#888' }}>Stability</span></div>
+                <div><span style={{ color: '#888' }}>GS ±5kt:</span> <b style={{ color: metrics.gsOutOfRange > 0 ? '#ff8' : '#8f8' }}>{metrics.gsOutOfRange} pts</b></div>
+                <div><span style={{ color: '#888' }}>Max Accel:</span> <b>{metrics.maxAccel ?? '-'} kt/s</b></div>
+                <div><span style={{ color: '#888' }}>Points:</span> <b>{metrics.pointCount}</b></div>
+              </div>
+            </div>
+          )}
           <div style={{ background: '#2a2a4a', padding: 12, borderRadius: 8, display: 'flex', gap: 20, fontSize: 12, flexWrap: 'wrap' }}>
             <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#8f8', borderRadius: '50%', marginRight: 6 }}></span>Level</span>
             <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#ff8', borderRadius: '50%', marginRight: 6 }}></span>Descending</span>
             <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f88', borderRadius: '50%', marginRight: 6 }}></span>Steep</span>
             <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f8f', borderRadius: '50%', marginRight: 6 }}></span>Climbing</span>
+            <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#f0f', borderRadius: '50%', marginRight: 6 }}></span>Bank &gt;30°</span>
             <span style={{ marginLeft: 'auto', color: '#666' }}>{approachPoints.length} points</span>
           </div>
         </>
