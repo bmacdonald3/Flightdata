@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.expanduser('~'))
 from config import AZURE_SERVER, AZURE_DATABASE, AZURE_USERNAME, AZURE_PASSWORD
 from approach_scoring import calculate_approach_score, calc_approach_data
+from flight_preprocessor import preprocess_flight, truncate_to_approach
 import json
 import math
 
@@ -101,19 +102,33 @@ def get_best_runway(cursor, airport, last_track):
 
 def log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date, 
                 success, percentage=None, grade=None, failure_reason=None,
-                min_alt=None, max_alt=None, track_points=None):
+                min_alt=None, max_alt=None, track_points=None, leg_num=None, 
+                leg_type=None, flags=None):
     """Log a scoring attempt"""
-    cursor.execute("DELETE FROM scoring_attempts WHERE gufi = %s", (gufi,))
+    # For T&G legs, create unique gufi
+    log_gufi = f"{gufi}#leg{leg_num}" if leg_num and leg_num > 1 else gufi
+    
+    cursor.execute("DELETE FROM scoring_attempts WHERE gufi = %s", (log_gufi,))
+    
+    # Add flags to failure_reason if present
+    reason_with_flags = failure_reason
+    if flags:
+        flag_str = " | ".join(flags)
+        if reason_with_flags:
+            reason_with_flags = f"{reason_with_flags} [{flag_str}]"
+        else:
+            reason_with_flags = f"[{flag_str}]"
+    
     cursor.execute("""
         INSERT INTO scoring_attempts 
         (gufi, callsign, ac_type, arr_airport, flight_date, success, 
          score_percentage, score_grade, failure_reason, min_altitude, max_altitude, track_points)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (gufi, callsign, ac_type, arrival, flight_date, success,
-          percentage, grade, failure_reason, min_alt, max_alt, track_points))
+    """, (log_gufi, callsign, ac_type, arrival, flight_date, success,
+          percentage, grade, reason_with_flags, min_alt, max_alt, track_points))
 
 def score_flight(cursor, gufi, verbose=False):
-    """Score a single flight, log the attempt"""
+    """Score a single flight (or multiple legs for T&G), log attempts"""
     # Get flight info with min/max altitude
     cursor.execute("""
         SELECT callsign, departure, arrival, 
@@ -132,11 +147,8 @@ def score_flight(cursor, gufi, verbose=False):
     callsign = flight['callsign']
     arrival = flight['arrival']
     flight_date = flight['first_seen'].date() if flight['first_seen'] else None
-    min_alt = flight['min_alt']
-    max_alt = flight['max_alt']
-    point_count = flight['point_count']
     
-    # Get aircraft type
+    # Get aircraft type early for logging
     cursor.execute("SELECT model FROM aircraft WHERE n_number = %s", (callsign,))
     ac = cursor.fetchone()
     ac_type = ac['model'] if ac else None
@@ -144,7 +156,8 @@ def score_flight(cursor, gufi, verbose=False):
     if not arrival:
         log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
                    False, failure_reason="No arrival airport",
-                   min_alt=min_alt, max_alt=max_alt, track_points=point_count)
+                   min_alt=flight['min_alt'], max_alt=flight['max_alt'], 
+                   track_points=flight['point_count'])
         return None, "No arrival airport"
     
     # Get track points
@@ -154,106 +167,158 @@ def score_flight(cursor, gufi, verbose=False):
     """, (gufi,))
     track = cursor.fetchall()
     
-    if len(track) < 5:
+    # Preprocess the flight
+    preprocess_result = preprocess_flight(track, arrival, cursor)
+    
+    if preprocess_result['is_ghost']:
         log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
-                   False, failure_reason="Too few track points",
-                   min_alt=min_alt, max_alt=max_alt, track_points=len(track))
-        return None, "Too few track points"
+                   False, failure_reason=f"Ghost: {preprocess_result['ghost_reason']}",
+                   min_alt=flight['min_alt'], max_alt=flight['max_alt'], 
+                   track_points=len(track), flags=preprocess_result['flags'])
+        return None, f"Ghost: {preprocess_result['ghost_reason']}"
     
-    track = calculate_derivatives(track)
-    
-    # Get last track heading
-    last_track = None
-    for p in reversed(track):
-        if p.get('track'):
-            last_track = float(p['track'])
-            break
-    
-    # Get runway
-    best_rwy = get_best_runway(cursor, arrival, last_track)
-    if not best_rwy:
+    # Process each leg
+    legs = preprocess_result['legs']
+    if not legs:
         log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
-                   False, failure_reason=f"No runway data for {arrival}",
-                   min_alt=min_alt, max_alt=max_alt, track_points=point_count)
-        return None, f"No runway data for {arrival}"
+                   False, failure_reason="No valid legs found",
+                   min_alt=flight['min_alt'], max_alt=flight['max_alt'], 
+                   track_points=len(track), flags=preprocess_result['flags'])
+        return None, "No valid legs found"
     
-    # Get aircraft speeds
-    aircraft_speeds = None
-    if ac_type:
-        cursor.execute("SELECT * FROM aircraft_speeds WHERE ac_type = %s", (ac_type,))
-        aircraft_speeds = cursor.fetchone()
-    
-    # Get METAR
-    metar = None
-    if flight['first_seen']:
+    scores = []
+    for leg_num, leg in enumerate(legs, 1):
+        leg_track = leg['track']
+        leg_type = leg['leg_type']
+        
+        if len(leg_track) < 5:
+            if verbose:
+                print(f"    Leg {leg_num}/{len(legs)} ({leg_type}): Too few points ({len(leg_track)})")
+            continue
+        
+        # Calculate derivatives for this leg
+        leg_track = calculate_derivatives(leg_track)
+        
+        # Get last track heading
+        last_track = None
+        for p in reversed(leg_track):
+            if p.get('track'):
+                last_track = float(p['track'])
+                break
+        
+        # Get runway
+        best_rwy = get_best_runway(cursor, arrival, last_track)
+        if not best_rwy:
+            log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
+                       False, failure_reason=f"No runway data for {arrival}",
+                       min_alt=leg['min_alt'], max_alt=leg['max_alt'],
+                       track_points=len(leg_track), leg_num=leg_num, leg_type=leg_type,
+                       flags=preprocess_result['flags'])
+            continue
+        
+        # Truncate to approach segment
+        airport_elev = best_rwy.get('elevation') or 0
+        leg_track, truncate_flags = truncate_to_approach(leg_track, best_rwy, 15, airport_elev)
+        all_flags = preprocess_result['flags'] + truncate_flags
+        
+        if len(leg_track) < 5:
+            if verbose:
+                print(f"    Leg {leg_num}/{len(legs)} ({leg_type}): Too few points after truncation")
+            continue
+        
+        # Get aircraft speeds
+        aircraft_speeds = None
+        if ac_type:
+            cursor.execute("SELECT * FROM aircraft_speeds WHERE ac_type = %s", (ac_type,))
+            aircraft_speeds = cursor.fetchone()
+        
+        # Get METAR
+        metar = None
+        if flight['first_seen']:
+            cursor.execute("""
+                SELECT TOP 1 m.wind_dir_degrees, m.wind_speed_kt, m.wind_gust_kt
+                FROM metar_observations m
+                JOIN airports a ON m.airport_id = a.airport_id
+                WHERE a.icao_code = %s AND m.observation_time <= %s
+                ORDER BY m.observation_time DESC
+            """, (arrival, flight['first_seen']))
+            metar = cursor.fetchone()
+        
+        # Calculate approach data
+        approach_pts = calc_approach_data(leg_track, best_rwy, heading_filter=30)
+        
+        if not approach_pts:
+            log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
+                       False, failure_reason="No approach points (heading filter)",
+                       min_alt=leg['min_alt'], max_alt=leg['max_alt'],
+                       track_points=len(leg_track), leg_num=leg_num, leg_type=leg_type,
+                       flags=all_flags)
+            continue
+        
+        # Calculate score
+        score = calculate_approach_score(approach_pts, best_rwy, metar, aircraft_speeds)
+        
+        if not score:
+            log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
+                       False, failure_reason="Scoring calculation failed",
+                       min_alt=leg['min_alt'], max_alt=leg['max_alt'],
+                       track_points=len(leg_track), leg_num=leg_num, leg_type=leg_type,
+                       flags=all_flags)
+            continue
+        
+        # Save score (with leg suffix for T&G)
+        score_gufi = f"{gufi}#leg{leg_num}" if len(legs) > 1 else gufi
+        cursor.execute("DELETE FROM approach_scores WHERE gufi = %s", (score_gufi,))
         cursor.execute("""
-            SELECT TOP 1 m.wind_dir_degrees, m.wind_speed_kt, m.wind_gust_kt
-            FROM metar_observations m
-            JOIN airports a ON m.airport_id = a.airport_id
-            WHERE a.icao_code = %s AND m.observation_time <= %s
-            ORDER BY m.observation_time DESC
-        """, (arrival, flight['first_seen']))
-        metar = cursor.fetchone()
-    
-    # Calculate approach data
-    approach_pts = calc_approach_data(track, best_rwy, heading_filter=30)
-    
-    if not approach_pts:
+            INSERT INTO approach_scores (
+                gufi, callsign, ac_type, arr_airport, runway_id, flight_date,
+                total_score, max_score, percentage, grade,
+                descent_score, descent_max, stabilized_score, stabilized_max,
+                centerline_score, centerline_max, turn_to_final_score, turn_to_final_max,
+                speed_control_score, speed_control_max, threshold_score, threshold_max,
+                stabilized_distance_nm, max_bank_angle, max_crosstrack_ft, avg_speed_kt, threshold_agl_ft,
+                severe_penalty_count, severe_penalties_json,
+                wind_dir, wind_speed_kt, wind_gust_kt, crosswind_kt,
+                score_details_json
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+        """, (
+            score_gufi, callsign, ac_type, arrival, best_rwy['runway_id'], flight_date,
+            score['total'], score['maxTotal'], score['percentage'], score['grade'],
+            score['scores']['descent']['score'], score['scores']['descent']['max'],
+            score['scores']['stabilized']['score'], score['scores']['stabilized']['max'],
+            score['scores']['centerline']['score'], score['scores']['centerline']['max'],
+            score['scores']['turnToFinal']['score'], score['scores']['turnToFinal']['max'],
+            score['scores']['speedControl']['score'], score['scores']['speedControl']['max'],
+            score['scores']['thresholdCrossing']['score'], score['scores']['thresholdCrossing']['max'],
+            score['metrics'].get('stabilizedDist'), score['metrics'].get('maxBank'),
+            score['metrics'].get('maxCrosstrack'), score['metrics'].get('avgSpeed'),
+            score['metrics'].get('thresholdAgl'),
+            len(score['severePenalties']), json.dumps(score['severePenalties']),
+            score['wind']['dir'], score['wind']['speed'], score['wind']['gust'], score['wind']['crosswind'],
+            json.dumps(score)
+        ))
+        
+        # Log success
         log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
-                   False, failure_reason="No approach points (heading filter)",
-                   min_alt=min_alt, max_alt=max_alt, track_points=point_count)
-        return None, "No approach points (heading filter)"
+                   True, percentage=score['percentage'], grade=score['grade'],
+                   min_alt=leg['min_alt'], max_alt=leg['max_alt'],
+                   track_points=len(leg_track), leg_num=leg_num if len(legs) > 1 else None, 
+                   leg_type=leg_type, flags=all_flags)
+        
+        scores.append(score)
+        
+        if verbose and len(legs) > 1:
+            print(f"    Leg {leg_num}/{len(legs)} ({leg_type}): {score['percentage']}% ({score['grade']})")
     
-    # Calculate score
-    score = calculate_approach_score(approach_pts, best_rwy, metar, aircraft_speeds)
-    
-    if not score:
-        log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
-                   False, failure_reason="Scoring calculation failed",
-                   min_alt=min_alt, max_alt=max_alt, track_points=point_count)
-        return None, "Scoring failed"
-    
-    # Save score
-    cursor.execute("DELETE FROM approach_scores WHERE gufi = %s", (gufi,))
-    cursor.execute("""
-        INSERT INTO approach_scores (
-            gufi, callsign, ac_type, arr_airport, runway_id, flight_date,
-            total_score, max_score, percentage, grade,
-            descent_score, descent_max, stabilized_score, stabilized_max,
-            centerline_score, centerline_max, turn_to_final_score, turn_to_final_max,
-            speed_control_score, speed_control_max, threshold_score, threshold_max,
-            stabilized_distance_nm, max_bank_angle, max_crosstrack_ft, avg_speed_kt, threshold_agl_ft,
-            severe_penalty_count, severe_penalties_json,
-            wind_dir, wind_speed_kt, wind_gust_kt, crosswind_kt,
-            score_details_json
-        ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-        )
-    """, (
-        gufi, callsign, ac_type, arrival, best_rwy['runway_id'], flight_date,
-        score['total'], score['maxTotal'], score['percentage'], score['grade'],
-        score['scores']['descent']['score'], score['scores']['descent']['max'],
-        score['scores']['stabilized']['score'], score['scores']['stabilized']['max'],
-        score['scores']['centerline']['score'], score['scores']['centerline']['max'],
-        score['scores']['turnToFinal']['score'], score['scores']['turnToFinal']['max'],
-        score['scores']['speedControl']['score'], score['scores']['speedControl']['max'],
-        score['scores']['thresholdCrossing']['score'], score['scores']['thresholdCrossing']['max'],
-        score['metrics'].get('stabilizedDist'), score['metrics'].get('maxBank'),
-        score['metrics'].get('maxCrosstrack'), score['metrics'].get('avgSpeed'),
-        score['metrics'].get('thresholdAgl'),
-        len(score['severePenalties']), json.dumps(score['severePenalties']),
-        score['wind']['dir'], score['wind']['speed'], score['wind']['gust'], score['wind']['crosswind'],
-        json.dumps(score)
-    ))
-    
-    # Log success
-    log_attempt(cursor, gufi, callsign, ac_type, arrival, flight_date,
-               True, percentage=score['percentage'], grade=score['grade'],
-               min_alt=min_alt, max_alt=max_alt, track_points=point_count)
-    
-    return score, None
+    if scores:
+        return scores[0] if len(scores) == 1 else scores, None
+    else:
+        return None, "No legs scored successfully"
+
 
 def main():
     import argparse
