@@ -168,7 +168,16 @@ function calcApproachData(track, runway, glideslopeAngle, tch) {
     const alt = p.altitude || 0, agl = alt - elev
     const idealAlt = elev + tch + (alongTrackNm * 6076.12 * Math.tan(gs * Math.PI / 180))
     return { idx, distNm: alongTrackNm, crossTrackFt, altitude: alt, agl, idealAlt, gsDevFt: alt - idealAlt, speed: p.speed, vs: p.vertical_speed, track: p.track, time: p.position_time, lat: pLat, lon: pLon }
-  }).filter(p => p !== null)
+  }).filter(p => {
+    if (!p) return false
+    const inbound = parseFloat(runway.heading)
+    if (p.track != null) {
+      let diff = Math.abs(parseFloat(p.track) - inbound)
+      if (diff > 180) diff = 360 - diff
+      if (diff > 30) return false
+    }
+    return p.distNm > 0 && p.distNm < 10
+  })
 }
 
 function CalibratorTab({ staged, formatTime, arrMetars }) {
@@ -348,7 +357,7 @@ function VisualizationTab({ staged, arrMetars }) {
   const crossStep = maxCross <= 500 ? 100 : maxCross <= 1000 ? 250 : 500
   const crossGridLines = []; for (let c = -maxCross; c <= maxCross; c += crossStep) crossGridLines.push(c)
 
-  const sortedPoints = [...approachPoints].sort((a, b) => b.distNm - a.distNm)
+  const sortedPoints = [...approachPoints].sort((a, b) => a.idx - b.idx)
   const vertPathD = sortedPoints.length > 1 ? sortedPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(p.distNm)} ${yScaleVert(p.altitude)}`).join(' ') : ''
   const latPathD = sortedPoints.length > 1 ? sortedPoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(p.distNm)} ${yScaleLat(Math.max(-maxCross, Math.min(maxCross, p.crossTrackFt)))}`).join(' ') : ''
 
