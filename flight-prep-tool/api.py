@@ -115,8 +115,8 @@ def calculate_derivatives(points):
         prev = points[i-1]
         curr = points[i]
         try:
-            t1 = datetime.fromisoformat(prev['position_time'].replace('Z', '+00:00'))
-            t2 = datetime.fromisoformat(curr['position_time'].replace('Z', '+00:00'))
+            t1 = prev['position_time'] if isinstance(prev['position_time'], datetime) else datetime.fromisoformat(prev['position_time'].replace('Z', '+00:00'))
+            t2 = curr['position_time'] if isinstance(curr['position_time'], datetime) else datetime.fromisoformat(curr['position_time'].replace('Z', '+00:00'))
             dt = (t2 - t1).total_seconds()
         except:
             continue
@@ -397,6 +397,7 @@ def get_staged():
 
     cursor.execute("SELECT * FROM staged_track_points WHERE staged_flight_id = %s ORDER BY position_time", (flight['id'],))
     points = cursor.fetchall()
+    points = calculate_derivatives(points)
 
     if points:
         last = points[-1]
