@@ -265,7 +265,7 @@ def upload_batch(conn, flights):
         for f in flights:
             # Calculate vertical speed before inserting
             # f['vertical_speed'] = calculate_vertical_speed(
-            f['vertical_speed'] = None
+            f['vertical_speed'] = calculate_vertical_speed(conn, f.get('gufi'), f.get('altitude'), f.get('position_time'))
 
             try:
                 cursor.execute('''

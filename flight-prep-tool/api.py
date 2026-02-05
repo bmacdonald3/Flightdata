@@ -15,12 +15,23 @@ from config import AZURE_SERVER, AZURE_DATABASE, AZURE_USERNAME, AZURE_PASSWORD
 app = Flask(__name__)
 CORS(app)
 
-# Airport elevations (approximate) - add more as needed
 AIRPORT_ELEVATIONS = {
     'KJFK': 13, 'KLGA': 21, 'KEWR': 18, 'KTEB': 9, 'KHPN': 439,
     'KBDR': 10, 'KHVN': 14, 'KGON': 10, 'KDXR': 457, 'KOXC': 726,
     'KSWF': 491, 'KCDW': 173, 'KMMU': 187, 'KFOK': 67, 'KISP': 99,
-    'KFRG': 80, 'KPOU': 165, 'KPNC': 13, 'KLOM': 302,
+    'KFRG': 80, 'KPOU': 165, 'KPNC': 13, 'KLOM': 302, 'KBOS': 20,
+    'KPVD': 55, 'KALB': 285, 'KSYR': 421, 'KBUF': 728, 'KROC': 559,
+    'KPWM': 76, 'KBGR': 192, 'KBTV': 335, 'KMHT': 266, 'KBED': 133,
+    'KACK': 48, 'KMVY': 67, 'KHYA': 54, 'KHWV': 81, 'KTTN': 213,
+    'KHFD': 18, 'KACY': 75, 'KPNE': 120, 'KRDG': 344, 'KABE': 393,
+    'KAVP': 962, 'KBGM': 1636, 'KORH': 1009, 'KMDT': 310, 'KLNS': 403,
+    'KITH': 1099, 'KELM': 954, 'KIPT': 529, 'KPSM': 100, 'KLEB': 603,
+    'KCON': 342, 'KASH': 199, 'KLCI': 545, 'KEEN': 488, 'KRUT': 787,
+    'KMPV': 1166, 'KMVL': 732, 'KDDH': 827, 'KVSF': 577, 'KAUG': 352,
+    'KPQI': 534, 'KSFM': 244, 'KLEW': 288, 'KRKD': 56, 'KBHB': 83,
+    'KSFZ': 441, 'KWST': 81, 'KOQU': 18, 'KUUU': 172, 'KEWB': 80,
+    'KBVY': 107, 'KLWM': 148, 'KFIT': 348, 'KPYM': 148, 'KTAN': 43,
+    'KPVC': 9, 'KIJD': 247, 'KBDL': 173, 'KPHL': 36,
 }
 
 def get_conn():
@@ -29,139 +40,171 @@ def get_conn():
         database=AZURE_DATABASE, tds_version='7.3', autocommit=True
     )
 
-def determine_flight_status(last_alt, last_speed, last_vs, arrival_airport):
-    """Determine if flight is Enroute, Approach, or Landed"""
+def determine_flight_status(last_alt, last_speed, last_vs, min_alt, arrival_airport, last_seen, now=None):
+    """
+    Determine flight status based on last point data and minimum altitude reached.
+    
+    Args:
+        last_alt: Altitude at last position
+        last_speed: Speed at last position  
+        last_vs: Vertical speed at last position
+        min_alt: Minimum altitude seen in last N points
+        arrival_airport: Destination airport
+        last_seen: Timestamp of last position
+        now: Current time (for staleness check)
+    """
     if last_alt is None or last_speed is None:
         return 'Unknown'
     
-    # Get airport elevation (default 0 if unknown)
     field_elev = AIRPORT_ELEVATIONS.get(arrival_airport, 0)
-    agl = last_alt - field_elev
+    last_agl = last_alt - field_elev
+    min_agl = (min_alt - field_elev) if min_alt else last_agl
     
-    # Landed: Below 200 AGL and slow
-    if agl < 200 and last_speed < 50:
+    # Check if data is stale (no update in 5+ minutes)
+    if now is None:
+        now = datetime.utcnow()
+    if isinstance(last_seen, str):
+        try:
+            last_seen = datetime.fromisoformat(last_seen.replace('Z', '+00:00')).replace(tzinfo=None)
+        except:
+            last_seen = now
+    
+    minutes_since_update = (now - last_seen).total_seconds() / 60 if last_seen else 0
+    
+    # LANDED: Data went stale while aircraft was low (< 500 AGL)
+    # Radar typically loses aircraft below 200-500 AGL
+    if minutes_since_update > 2 and min_agl < 500:
         return 'Landed'
     
-    # Approach: Descending, below 3000 AGL, moderate speed
-    if agl < 3000 and last_vs is not None and last_vs < -200:
+    # LANDED: Very low and very slow (actually on ground)
+    if last_agl < 100 and last_speed < 40:
+        return 'Landed'
+    
+    # APPROACH: Descending, low altitude
+    if last_agl < 3000 and last_vs is not None and last_vs < -200:
         return 'Approach'
     
-    # Low altitude but not descending much - pattern/maneuvering
-    if agl < 2000 and last_speed < 150:
+    # PATTERN: Low altitude, slow, not descending fast (traffic pattern)
+    if last_agl < 2000 and last_speed < 150 and (last_vs is None or last_vs > -500):
         return 'Pattern'
     
-    # Otherwise enroute
+    # CLIMBING: Positive VS and gaining altitude after being low
+    if last_vs is not None and last_vs > 300 and last_agl < 3000:
+        return 'Departure'
+    
     return 'Enroute'
 
 def calculate_derivatives(points):
-    """Calculate acceleration, turn rate, and vertical acceleration for each point"""
     if len(points) < 2:
         return points
-    
     for i in range(len(points)):
         points[i]['accel'] = None
         points[i]['turn_rate'] = None
         points[i]['vert_accel'] = None
-        
         if i == 0:
             continue
-            
         prev = points[i-1]
         curr = points[i]
-        
         try:
             t1 = datetime.fromisoformat(prev['position_time'].replace('Z', '+00:00'))
             t2 = datetime.fromisoformat(curr['position_time'].replace('Z', '+00:00'))
             dt = (t2 - t1).total_seconds()
         except:
             continue
-            
         if dt <= 0 or dt > 120:
             continue
-        
         if prev.get('speed') is not None and curr.get('speed') is not None:
             accel = (curr['speed'] - prev['speed']) / dt
             curr['accel'] = round(accel, 2)
-        
         if prev.get('track') is not None and curr.get('track') is not None:
             try:
                 track1 = float(prev['track'])
                 track2 = float(curr['track'])
                 diff = track2 - track1
-                if diff > 180:
-                    diff -= 360
-                elif diff < -180:
-                    diff += 360
-                turn_rate = diff / dt
-                curr['turn_rate'] = round(turn_rate, 2)
+                if diff > 180: diff -= 360
+                elif diff < -180: diff += 360
+                curr['turn_rate'] = round(diff / dt, 2)
             except:
                 pass
-        
         if prev.get('vertical_speed') is not None and curr.get('vertical_speed') is not None:
-            vert_accel = (curr['vertical_speed'] - prev['vertical_speed']) / dt
-            curr['vert_accel'] = round(vert_accel, 1)
-    
+            curr['vert_accel'] = round((curr['vertical_speed'] - prev['vertical_speed']) / dt, 1)
     return points
 
 @app.route('/api/flights', methods=['GET'])
 def list_flights():
     date = request.args.get('date')
+    now = datetime.utcnow()
+    
+    # Single optimized query with min altitude from last 10 points
     sql = """
-        SELECT 
-            f.gufi, f.callsign, f.departure, f.arrival,
-            CAST(MIN(f.position_time) AS DATE) as flight_date,
-            MIN(f.position_time) as first_seen,
-            MAX(f.position_time) as last_seen,
-            DATEDIFF(MINUTE, MIN(f.position_time), MAX(f.position_time)) as duration_minutes,
-            COUNT(*) as point_count,
-            MAX(a.manufacturer) as manufacturer,
-            MAX(a.model) as model,
-            MAX(a.aircraft_type) as aircraft_type
-        FROM flights f
-        LEFT JOIN aircraft a ON f.callsign = a.n_number
-        WHERE f.gufi IS NOT NULL AND f.callsign LIKE 'N%'
+        WITH FlightSummary AS (
+            SELECT 
+                f.gufi, f.callsign, f.departure, f.arrival,
+                CAST(MIN(f.position_time) AS DATE) as flight_date,
+                MIN(f.position_time) as first_seen,
+                MAX(f.position_time) as last_seen,
+                DATEDIFF(MINUTE, MIN(f.position_time), MAX(f.position_time)) as duration_minutes,
+                COUNT(*) as point_count,
+                MAX(a.manufacturer) as manufacturer,
+                MAX(a.model) as model,
+                MAX(a.aircraft_type) as aircraft_type
+            FROM flights f
+            LEFT JOIN aircraft a ON f.callsign = a.n_number
+            WHERE f.gufi IS NOT NULL AND f.callsign LIKE 'N%'
     """
     if date:
         sql += f" AND CAST(f.position_time AS DATE) = '{date}'"
-    sql += " GROUP BY f.gufi, f.callsign, f.departure, f.arrival ORDER BY MIN(f.position_time) DESC"
+    sql += """
+            GROUP BY f.gufi, f.callsign, f.departure, f.arrival
+        ),
+        LastPoints AS (
+            SELECT gufi, altitude, speed, vertical_speed,
+                   ROW_NUMBER() OVER (PARTITION BY gufi ORDER BY position_time DESC) as rn
+            FROM flights
+            WHERE gufi IN (SELECT gufi FROM FlightSummary)
+        ),
+        MinAltLast10 AS (
+            SELECT gufi, MIN(altitude) as min_alt
+            FROM LastPoints
+            WHERE rn <= 10
+            GROUP BY gufi
+        )
+        SELECT fs.*, 
+               lp.altitude as last_altitude, lp.speed as last_speed, lp.vertical_speed as last_vs,
+               ma.min_alt
+        FROM FlightSummary fs
+        LEFT JOIN LastPoints lp ON fs.gufi = lp.gufi AND lp.rn = 1
+        LEFT JOIN MinAltLast10 ma ON fs.gufi = ma.gufi
+        ORDER BY fs.first_seen DESC
+    """
     
     conn = get_conn()
     cursor = conn.cursor(as_dict=True)
     cursor.execute(sql)
     flights = cursor.fetchall()
-    
-    # Get last point data for each flight to determine status
-    for f in flights:
-        cursor.execute("""
-            SELECT TOP 1 altitude, speed, vertical_speed
-            FROM flights WHERE gufi = %s
-            ORDER BY position_time DESC
-        """, (f['gufi'],))
-        last = cursor.fetchone()
-        if last:
-            f['last_altitude'] = last['altitude']
-            f['last_speed'] = last['speed']
-            f['flight_status'] = determine_flight_status(
-                last['altitude'], last['speed'], last['vertical_speed'], f['arrival']
-            )
-        else:
-            f['flight_status'] = 'Unknown'
-    
     conn.close()
     
     for f in flights:
+        f['flight_status'] = determine_flight_status(
+            f.get('last_altitude'), 
+            f.get('last_speed'), 
+            f.get('last_vs'),
+            f.get('min_alt'),
+            f.get('arrival'),
+            f.get('last_seen'),
+            now
+        )
         for k, v in f.items():
             if isinstance(v, datetime):
                 f[k] = v.isoformat()
-    return jsonify(flights)
+    
+    return jsonify(flights[:300])
 
 @app.route('/api/track', methods=['GET'])
 def get_flight_track():
-    """Get track points for a specific flight by gufi query param"""
     gufi = request.args.get('gufi')
     if not gufi:
         return jsonify({'error': 'gufi parameter required'}), 400
-    
     conn = get_conn()
     cursor = conn.cursor(as_dict=True)
     cursor.execute("""
@@ -173,21 +216,34 @@ def get_flight_track():
     """, (gufi,))
     points = cursor.fetchall()
     conn.close()
-    
     for p in points:
         for k, v in p.items():
             if isinstance(v, datetime):
                 p[k] = v.isoformat()
-    
     points = calculate_derivatives(points)
-    
     return jsonify({'points': points})
+
+@app.route('/api/runways', methods=['GET'])
+def get_runways():
+    airport = request.args.get('airport')
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    if airport:
+        cursor.execute("SELECT * FROM runways WHERE airport_icao = %s ORDER BY runway_id", (airport,))
+    else:
+        cursor.execute("SELECT * FROM runways ORDER BY airport_icao, runway_id")
+    runways = cursor.fetchall()
+    conn.close()
+    for r in runways:
+        for k, v in r.items():
+            if isinstance(v, datetime):
+                r[k] = v.isoformat()
+    return jsonify(runways)
 
 @app.route('/api/stage', methods=['POST'])
 def stage_flight():
     data = request.json
     gufi = data.get('gufi')
-    
     conn = get_conn()
     cursor = conn.cursor(as_dict=True)
     
@@ -204,17 +260,25 @@ def stage_flight():
         conn.close()
         return jsonify({'error': 'Flight not found'}), 404
     
-    # Get last point for status
     cursor.execute("""
         SELECT TOP 1 altitude, speed, vertical_speed
-        FROM flights WHERE gufi = %s
-        ORDER BY position_time DESC
+        FROM flights WHERE gufi = %s ORDER BY position_time DESC
     """, (gufi,))
     last = cursor.fetchone()
+    
+    cursor.execute("""
+        SELECT MIN(altitude) as min_alt FROM (
+            SELECT TOP 10 altitude FROM flights WHERE gufi = %s ORDER BY position_time DESC
+        ) t
+    """, (gufi,))
+    min_row = cursor.fetchone()
+    min_alt = min_row['min_alt'] if min_row else None
+    
     flight_status = 'Unknown'
     if last:
         flight_status = determine_flight_status(
-            last['altitude'], last['speed'], last['vertical_speed'], flight['arrival']
+            last['altitude'], last['speed'], last['vertical_speed'],
+            min_alt, flight['arrival'], flight['last_seen']
         )
     
     callsign = flight['callsign']
@@ -222,7 +286,7 @@ def stage_flight():
     aircraft = cursor.fetchone() or {}
     
     cursor.execute("DELETE FROM staged_metars")
-    cursor.execute("DELETE FROM staged_track_points")  
+    cursor.execute("DELETE FROM staged_track_points")
     cursor.execute("DELETE FROM staged_flights")
     
     cursor.execute("""
@@ -276,7 +340,6 @@ def get_staged():
     
     cursor.execute("SELECT * FROM staged_flights ORDER BY id DESC")
     flight = cursor.fetchone()
-    
     if not flight:
         conn.close()
         return jsonify({'error': 'No staged flight'}), 404
@@ -284,11 +347,15 @@ def get_staged():
     cursor.execute("SELECT * FROM staged_track_points WHERE staged_flight_id = %s ORDER BY position_time", (flight['id'],))
     points = cursor.fetchall()
     
-    # Determine flight status from last point
     if points:
         last = points[-1]
+        # Get min altitude from last 10 points
+        last_10 = points[-10:] if len(points) >= 10 else points
+        min_alt = min(p.get('altitude') or 99999 for p in last_10)
+        
         flight['flight_status'] = determine_flight_status(
-            last.get('altitude'), last.get('speed'), last.get('vertical_speed'), flight.get('arr_airport')
+            last.get('altitude'), last.get('speed'), last.get('vertical_speed'),
+            min_alt, flight.get('arr_airport'), last.get('position_time')
         )
         flight['last_altitude'] = last.get('altitude')
         flight['last_speed'] = last.get('speed')
@@ -297,14 +364,20 @@ def get_staged():
     
     cursor.execute("SELECT * FROM staged_metars WHERE staged_flight_id = %s ORDER BY observation_time", (flight['id'],))
     metars = cursor.fetchall()
+    
+    runways = []
+    if flight.get('arr_airport'):
+        cursor.execute("SELECT * FROM runways WHERE airport_icao = %s ORDER BY runway_id", (flight['arr_airport'],))
+        runways = cursor.fetchall()
+    
     conn.close()
     
-    for obj in [flight] + points + metars:
+    for obj in [flight] + points + metars + runways:
         for k, v in obj.items():
             if isinstance(v, datetime):
                 obj[k] = v.isoformat()
     
-    return jsonify({'flight': flight, 'track': points, 'metars': metars})
+    return jsonify({'flight': flight, 'track': points, 'metars': metars, 'runways': runways})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
