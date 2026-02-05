@@ -15,6 +15,7 @@ export default function App() {
   const [staged, setStaged] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [aircraftSpeeds, setAircraftSpeeds] = useState(null)
 
   useEffect(() => { loadStaged() }, [])
 
@@ -27,7 +28,18 @@ export default function App() {
         setError('No flight staged. Use Flight Data Prep to stage a flight.')
         setStaged(null)
       } else {
-        setStaged(await res.json())
+        const data = await res.json()
+        setStaged(data)
+        // Fetch aircraft speeds based on model
+        if (data.flight?.model) {
+          try {
+            const speedRes = await fetch(`${API}/aircraft_speeds?ac_type=${encodeURIComponent(data.flight.model)}`)
+            if (speedRes.ok) {
+              const speeds = await speedRes.json()
+              setAircraftSpeeds(speeds)
+            }
+          } catch (e) { console.log('No aircraft speeds found') }
+        }
       }
     } catch (err) {
       setError('Failed to load: ' + err.message)
@@ -67,7 +79,7 @@ export default function App() {
           : error ? <div style={{ textAlign: 'center', padding: 40 }}><div style={{ color: '#f88', marginBottom: 20 }}>{error}</div><a href="http://192.168.42.13:5174" style={{ color: '#6cf' }}>Open Flight Data Prep →</a></div>
           : tab === 'data' ? <DataTab staged={staged} formatTime={formatTime} formatDateTime={formatDateTime} thStyle={thStyle} tdStyle={tdStyle} depMetars={depMetars} arrMetars={arrMetars} statusColor={statusColor} />
           : tab === 'calibrator' ? <CalibratorTab staged={staged} formatTime={formatTime} arrMetars={arrMetars} />
-          : tab === 'visualization' ? <VisualizationTab staged={staged} arrMetars={arrMetars} />
+          : tab === 'visualization' ? <VisualizationTab staged={staged} arrMetars={arrMetars} aircraftSpeeds={aircraftSpeeds} />
           : <MapTab staged={staged} arrMetars={arrMetars} />}
       </div>
     </div>
@@ -276,7 +288,7 @@ function CalibratorTab({ staged, formatTime, arrMetars }) {
   )
 }
 
-function VisualizationTab({ staged, arrMetars }) {
+function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
   const runways = staged?.runways || [], track = staged?.track || [], flight = staged?.flight || {}
   const [selectedRunway, setSelectedRunway] = useState(null)
   const [glideslopeAngle, setGlideslopeAngle] = useState(3.0)
@@ -427,6 +439,15 @@ function VisualizationTab({ staged, arrMetars }) {
         </div>
         <div style={{ marginLeft: 'auto', fontSize: 12, color: '#888' }}>{selectedRunway && `${flight.arr_airport} RWY ${selectedRunway.runway_id} | TDZE ${selectedRunway.elevation}ft | Hdg ${selectedRunway.heading}°`}</div>
       </div>
+      {aircraftSpeeds && (
+        <div style={{ background: '#1a2a1a', padding: 10, borderRadius: 6, display: 'flex', gap: 20, fontSize: 12, border: '1px solid #3a5a3a' }}>
+          <span><b style={{ color: '#8f8' }}>{aircraftSpeeds.ac_type}</b></span>
+          <span>Appr: <b>{aircraftSpeeds.appr_speed} kts</b></span>
+          <span>Dirty Stall: <b>{aircraftSpeeds.dirty_stall} kts</b></span>
+          <span>Clean Stall: <b>{aircraftSpeeds.clean_stall} kts</b></span>
+          <span style={{ color: '#888' }}>Vref 1.3: <b>{Math.round(aircraftSpeeds.dirty_stall * 1.3)} kts</b></span>
+        </div>
+      )}
 
       {approachPoints.length === 0 ? (
         <div style={{ background: '#222238', padding: 40, borderRadius: 8, textAlign: 'center', color: '#888' }}>No approach data within {maxDist}nm</div>
@@ -538,6 +559,13 @@ function MapTab({ staged, arrMetars }) {
   const inputStyle = { padding: 6, width: 90, background: '#2a2a4a', color: '#eee', border: '1px solid #444', borderRadius: 4, fontFamily: 'inherit' }
   const getPointColor = (p) => !p.vertical_speed ? '#888' : p.vertical_speed > 200 ? '#f8f' : p.vertical_speed < -700 ? '#f88' : Math.abs(p.vertical_speed) < 100 ? '#8f8' : '#ff8'
 
+  const calcBankAngle = (p) => {
+    const turnRate = p.turn_rate || 0
+    const speedFtS = (p.speed || 0) * 1.687
+    const omegaRadS = turnRate * Math.PI / 180
+    return Math.abs(Math.atan(speedFtS * omegaRadS / 32.2) * 180 / Math.PI)
+  }
+
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div style={{ background: '#2a2a4a', padding: 12, display: 'flex', flexWrap: 'wrap', gap: 15, alignItems: 'center' }}>
@@ -561,11 +589,15 @@ function MapTab({ staged, arrMetars }) {
           <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}" attribution='' opacity={0.5}/>
           {extendedCenterline.length > 0 && <Polyline positions={extendedCenterline} color="#0f0" weight={2} dashArray="10,10" opacity={0.7} />}
           {trackCoords.length > 1 && <Polyline positions={trackCoords} color="#6cf" weight={2} opacity={0.8} />}
-          {track.filter(p => p.latitude && p.longitude).map((p, i) => (
-            <CircleMarker key={i} center={[parseFloat(p.latitude), parseFloat(p.longitude)]} radius={4} fillColor={getPointColor(p)} color="#000" weight={1} fillOpacity={0.9}>
-              <Popup><div style={{ fontFamily: 'monospace', fontSize: 11 }}><b>Point {i + 1}</b><br/>Alt: {p.altitude} ft<br/>Spd: {p.speed} kts<br/>Trk: {p.track ? parseFloat(p.track).toFixed(0) : '-'}°<br/>VS: {p.vertical_speed} fpm</div></Popup>
-            </CircleMarker>
-          ))}
+          {track.filter(p => p.latitude && p.longitude).map((p, i) => {
+            const bank = calcBankAngle(p)
+            const isSteepBank = bank > 30
+            return (
+              <CircleMarker key={i} center={[parseFloat(p.latitude), parseFloat(p.longitude)]} radius={isSteepBank ? 7 : 4} fillColor={isSteepBank ? '#f0f' : getPointColor(p)} color={isSteepBank ? '#fff' : '#000'} weight={isSteepBank ? 2 : 1} fillOpacity={0.9}>
+                <Popup><div style={{ fontFamily: 'monospace', fontSize: 11 }}><b>Point {i + 1}</b><br/>Alt: {p.altitude} ft<br/>Spd: {p.speed} kts<br/>Trk: {p.track ? parseFloat(p.track).toFixed(0) : '-'}°<br/>VS: {p.vertical_speed} fpm<br/>Bank: <span style={{color: isSteepBank ? '#f0f' : 'inherit'}}>{bank.toFixed(1)}°</span><br/>Turn: {p.turn_rate?.toFixed(2) ?? '-'}°/s</div></Popup>
+              </CircleMarker>
+            )
+          })}
           {selectedRunway && <CircleMarker center={[parseFloat(selectedRunway.threshold_lat), parseFloat(selectedRunway.threshold_lon)]} radius={8} fillColor="#fff" color="#000" weight={2} fillOpacity={1}><Popup><div style={{ fontFamily: 'monospace', fontSize: 11 }}><b>RWY {selectedRunway.runway_id}</b><br/>Hdg: {selectedRunway.heading}°<br/>TDZE: {selectedRunway.elevation} ft</div></Popup></CircleMarker>}
           <MapUpdater center={center} />
         </MapContainer>
