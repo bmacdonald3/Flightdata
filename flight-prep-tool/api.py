@@ -856,5 +856,86 @@ def get_scoring_attempts():
     })
 
 
+@app.route('/api/benchmarks', methods=['GET'])
+def get_benchmarks():
+    """Get benchmarks for comparison"""
+    benchmark_type = request.args.get('type', 'ac_type')  # ac_type, airport, callsign
+    key = request.args.get('key')  # specific ac_type, airport, or callsign
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    if key:
+        cursor.execute("""
+            SELECT * FROM approach_benchmarks 
+            WHERE benchmark_type = %s AND benchmark_key = %s
+        """, (benchmark_type, key))
+        result = cursor.fetchone()
+    else:
+        cursor.execute("""
+            SELECT * FROM approach_benchmarks 
+            WHERE benchmark_type = %s 
+            ORDER BY avg_percentage DESC
+        """, (benchmark_type,))
+        result = cursor.fetchall()
+    
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/flight_ranking', methods=['GET'])
+def get_flight_ranking():
+    """Get ranking info for a specific scored flight"""
+    gufi = request.args.get('gufi')
+    if not gufi:
+        return jsonify({'error': 'gufi required'}), 400
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    # Get the flight's score
+    cursor.execute("SELECT * FROM approach_scores WHERE gufi = %s", (gufi,))
+    score = cursor.fetchone()
+    if not score:
+        conn.close()
+        return jsonify({'error': 'Flight not scored'}), 404
+    
+    # Get ranking within aircraft type
+    if score['ac_type']:
+        cursor.execute("""
+            SELECT COUNT(*) as better, 
+                   (SELECT COUNT(*) FROM approach_scores WHERE ac_type = %s) as total
+            FROM approach_scores 
+            WHERE ac_type = %s AND percentage > %s
+        """, (score['ac_type'], score['ac_type'], score['percentage']))
+        type_rank = cursor.fetchone()
+        
+        cursor.execute("""
+            SELECT * FROM approach_benchmarks 
+            WHERE benchmark_type = 'ac_type' AND benchmark_key = %s
+        """, (score['ac_type'],))
+        type_benchmark = cursor.fetchone()
+    else:
+        type_rank = None
+        type_benchmark = None
+    
+    # Get overall ranking
+    cursor.execute("""
+        SELECT COUNT(*) as better,
+               (SELECT COUNT(*) FROM approach_scores) as total
+        FROM approach_scores WHERE percentage > %s
+    """, (score['percentage'],))
+    overall_rank = cursor.fetchone()
+    
+    conn.close()
+    
+    return jsonify({
+        'score': score,
+        'type_rank': type_rank,
+        'type_benchmark': type_benchmark,
+        'overall_rank': overall_rank
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
