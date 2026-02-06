@@ -707,5 +707,120 @@ def run_scoring():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+
+
+# ══════════════════════════════════════════════════════════════
+# Scoring Config Endpoints (added by patch_api_config.py)
+# ══════════════════════════════════════════════════════════════
+
+@app.route('/api/scoring_config', methods=['GET'])
+def get_scoring_config():
+    """Get all scoring config values, grouped by category."""
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    cursor.execute(
+        "SELECT config_key, config_value, category, description "
+        "FROM scoring_config ORDER BY category, config_key"
+    )
+    configs = cursor.fetchall()
+    conn.close()
+
+    grouped = {}
+    for c in configs:
+        cat = c['category']
+        if cat not in grouped:
+            grouped[cat] = []
+        grouped[cat].append(c)
+
+    return jsonify({'configs': configs, 'grouped': grouped})
+
+
+@app.route('/api/scoring_config', methods=['POST'])
+def update_scoring_config():
+    """Update one or more config values. Body: {"key1": "value1", "key2": "value2"}"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    conn = get_conn()
+    cursor = conn.cursor()
+
+    updated = 0
+    for key, value in data.items():
+        cursor.execute(
+            "UPDATE scoring_config "
+            "SET config_value = %s, updated_at = GETUTCDATE() "
+            "WHERE config_key = %s",
+            (str(value), key)
+        )
+        updated += cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({'status': 'ok', 'updated': updated})
+
+
+@app.route('/api/scoring_config/reset', methods=['POST'])
+def reset_scoring_config():
+    """Reset all config values to original defaults."""
+    defaults = {
+        'descent_max': '20', 'stabilized_max': '20', 'centerline_max': '20',
+        'turn_to_final_max': '15', 'speed_control_max': '15', 'threshold_max': '10',
+        'cfit_penalty': '20', 'stall_penalty': '20',
+        'gs_dangerous_below': '-200', 'gs_warning_below': '-100', 'gs_high_above': '150',
+        'climbing_threshold': '200',
+        'stabilized_speed_tol': '10', 'stabilized_gs_tol': '150', 'stabilized_cl_tol': '300',
+        'stabilized_critical_dist': '1.0', 'stabilized_late_dist': '2.0', 'stabilized_ideal_dist': '3.0',
+        'cl_max_severe': '500', 'cl_max_warning': '300',
+        'cl_avg_severe': '200', 'cl_avg_warning': '100', 'crosswind_allowance': '20',
+        'bank_angle_steep': '30', 'cl_crossing_threshold': '50',
+        'speed_base_tolerance': '5', 'speed_major_deviation': '15',
+        'speed_minor_deviation': '10', 'speed_out_of_tol_pct': '30',
+        'threshold_target': '50', 'threshold_dangerous_low': '20',
+        'threshold_low': '35', 'threshold_high': '100', 'threshold_slightly_high': '75',
+        'cfit_agl_threshold': '500', 'cfit_gs_below': '-50',
+        'stall_agl_threshold': '50', 'stall_margin': '10',
+    }
+
+    conn = get_conn()
+    cursor = conn.cursor()
+    for key, value in defaults.items():
+        cursor.execute(
+            "UPDATE scoring_config "
+            "SET config_value = %s, updated_at = GETUTCDATE() "
+            "WHERE config_key = %s",
+            (value, key)
+        )
+    conn.commit()
+    conn.close()
+
+    return jsonify({'status': 'ok', 'message': f'Reset {len(defaults)} settings to defaults'})
+
+
+@app.route('/api/rescore_all', methods=['POST'])
+def rescore_all():
+    """Clear all scores and re-run batch scoring in background."""
+    import subprocess
+
+    conn = get_conn()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM approach_scores")
+    cursor.execute("DELETE FROM scoring_attempts")
+    conn.commit()
+    conn.close()
+
+    try:
+        subprocess.Popen(
+            ['python3', '/home/bmacdonald3/flight-prep-tool/batch_score.py',
+             '--days', '30', '--limit', '5000'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd='/home/bmacdonald3/flight-prep-tool'
+        )
+        return jsonify({'status': 'started', 'message': 'Cleared all scores and started re-scoring'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
