@@ -530,6 +530,17 @@ function CalibratorTab({ staged, formatTime, arrMetars }) {
 function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
   const runways = staged?.runways || [], track = staged?.track || [], flight = staged?.flight || {}
   const [selectedRunway, setSelectedRunway] = useState(null)
+  const [benchmark, setBenchmark] = useState(null)
+  
+  // Fetch benchmark for this aircraft type
+  useEffect(() => {
+    if (aircraftSpeeds?.ac_type) {
+      fetch(`${API}/benchmarks?type=ac_type&key=${encodeURIComponent(aircraftSpeeds.ac_type)}`)
+        .then(r => r.json())
+        .then(data => setBenchmark(data))
+        .catch(() => setBenchmark(null))
+    }
+  }, [aircraftSpeeds?.ac_type])
   const [glideslopeAngle, setGlideslopeAngle] = useState(3.0)
   const [tch, setTch] = useState(50)
   const [approachSpeed, setApproachSpeed] = useState(80)
@@ -790,6 +801,40 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
                   </div>
                 ))}
               </div>
+              {benchmark && benchmark.flight_count > 0 && (
+                <div style={{ marginTop: 12, padding: 10, background: '#252550', borderRadius: 6, border: '1px solid #446' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ color: '#8cf', fontWeight: 600 }}>vs {aircraftSpeeds?.ac_type} Fleet</span>
+                    <span style={{ color: '#888', fontSize: 11 }}>{benchmark.flight_count} flights scored</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, fontSize: 11 }}>
+                    <div>
+                      <div style={{ color: '#888' }}>Fleet Avg</div>
+                      <div style={{ fontSize: 16, fontWeight: 'bold' }}>{parseFloat(benchmark.avg_percentage).toFixed(0)}%</div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888' }}>Your Score</div>
+                      <div style={{ fontSize: 16, fontWeight: 'bold', color: approachScore.percentage >= parseFloat(benchmark.avg_percentage) ? '#8f8' : '#f88' }}>
+                        {approachScore.percentage}%
+                        <span style={{ fontSize: 11, marginLeft: 4 }}>
+                          ({approachScore.percentage >= parseFloat(benchmark.avg_percentage) ? '+' : ''}{(approachScore.percentage - parseFloat(benchmark.avg_percentage)).toFixed(0)})
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888' }}>Range</div>
+                      <div style={{ fontSize: 14 }}>{benchmark.min_percentage}% - {benchmark.max_percentage}%</div>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, fontSize: 10 }}>
+                    <span style={{ color: '#8f8' }}>A: {benchmark.grade_a}</span>
+                    <span style={{ color: '#8f8' }}>B: {benchmark.grade_b}</span>
+                    <span style={{ color: '#ff8' }}>C: {benchmark.grade_c}</span>
+                    <span style={{ color: '#fa8' }}>D: {benchmark.grade_d}</span>
+                    <span style={{ color: '#f88' }}>F: {benchmark.grade_f}</span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <div style={{ background: '#2a2a4a', padding: 12, borderRadius: 8, display: 'flex', gap: 20, fontSize: 12, flexWrap: 'wrap' }}>
