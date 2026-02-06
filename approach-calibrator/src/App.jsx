@@ -1,3 +1,4 @@
+import SettingsTab from './SettingsTab'
 import { useState, useEffect, useMemo } from 'react'
 import { MapContainer, TileLayer, Polyline, CircleMarker, Popup, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -105,13 +106,13 @@ export default function App() {
         </>}
       </div>
       <div style={{ display: 'flex', borderBottom: '1px solid #333' }}>
-        {['attempts', 'data', 'calibrator', 'visualization', 'map'].map(t => (
+        {['attempts', 'data', 'calibrator', 'visualization', 'map', 'settings'].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ padding: '12px 24px', background: tab === t ? '#2a2a4a' : 'transparent', color: tab === t ? '#6cf' : '#888', border: 'none', borderBottom: tab === t ? '2px solid #6cf' : '2px solid transparent', ...font, fontSize: 14, cursor: 'pointer', textTransform: 'capitalize' }}>
-            {t === 'data' ? 'Data Set' : t === 'calibrator' ? 'Calibrator' : t === 'visualization' ? 'Profile' : t === 'map' ? 'Map' : 'Scoreboard'}
+            {t === 'data' ? 'Data Set' : t === 'calibrator' ? 'Calibrator' : t === 'visualization' ? 'Profile' : t === 'map' ? 'Map' : t === 'settings' ? 'Settings' : 'Scoreboard'}
           </button>
         ))}
       </div>
-      <div style={{ flex: 1, overflow: 'auto', padding: (tab === 'map' || tab === 'attempts') ? 0 : 20 }}>
+      <div style={{ flex: 1, overflow: 'auto', padding: (tab === 'map' || tab === 'attempts' || tab === 'settings') ? 0 : 20 }}>
         {loading ? <div style={{ textAlign: 'center', color: '#888', padding: 40 }}>Loading...</div>
           : error ? <div style={{ textAlign: 'center', padding: 40 }}><div style={{ color: '#f88', marginBottom: 20 }}>{error}</div><a href="http://192.168.42.13:5174" style={{ color: '#6cf' }}>Open Flight Data Prep →</a></div>
           : tab === 'data' ? <DataTab staged={staged} formatTime={formatTime} formatDateTime={formatDateTime} thStyle={thStyle} tdStyle={tdStyle} depMetars={depMetars} arrMetars={arrMetars} statusColor={statusColor} />
@@ -119,6 +120,7 @@ export default function App() {
           : tab === 'visualization' ? <VisualizationTab staged={staged} arrMetars={arrMetars} aircraftSpeeds={aircraftSpeeds} />
           : tab === 'map' ? <MapTab staged={staged} arrMetars={arrMetars} />
           : tab === 'attempts' ? <AttemptsTab onLoadFlight={loadStaged} />
+          : tab === 'settings' ? <SettingsTab />
           : null}
       </div>
     </div>
