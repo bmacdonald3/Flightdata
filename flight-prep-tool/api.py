@@ -667,7 +667,17 @@ def get_scoring_status():
     
     cursor.execute("SELECT COUNT(*) as pending FROM flights f WHERE f.callsign LIKE 'N%' AND f.arrival IS NOT NULL AND NOT EXISTS (SELECT 1 FROM scoring_attempts s WHERE s.gufi = f.gufi) GROUP BY f.gufi HAVING MIN(f.altitude) < 2000")
     # This query is complex, simplify
-    cursor.execute("SELECT COUNT(DISTINCT gufi) as pending FROM flights WHERE callsign LIKE 'N%' AND arrival IS NOT NULL AND gufi NOT IN (SELECT gufi FROM scoring_attempts)")
+    cursor.execute("""
+        SELECT COUNT(*) as pending FROM (
+            SELECT f.gufi
+            FROM flights f
+            WHERE f.callsign LIKE 'N%%'
+              AND f.arrival IS NOT NULL
+              AND f.gufi NOT IN (SELECT gufi FROM scoring_attempts)
+            GROUP BY f.gufi
+            HAVING MIN(f.altitude) < 2000
+        ) sub
+    """)
     pending_result = cursor.fetchone()
     pending = pending_result['pending'] if pending_result else 0
     
