@@ -19,6 +19,10 @@ export default function App() {
   const [aircraftSpeeds, setAircraftSpeeds] = useState(null)
   const [scoringStatus, setScoringStatus] = useState(null)
   const [scoringRunning, setScoringRunning] = useState(false)
+  const [acTypeFilter, setAcTypeFilter] = useState('')
+  const [airportFilter, setAirportFilter] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
 
   useEffect(() => {
     fetchScoringStatus()
@@ -119,7 +123,7 @@ export default function App() {
           : tab === 'calibrator' ? <CalibratorTab staged={staged} formatTime={formatTime} arrMetars={arrMetars} />
           : tab === 'visualization' ? <VisualizationTab staged={staged} arrMetars={arrMetars} aircraftSpeeds={aircraftSpeeds} />
           : tab === 'map' ? <MapTab staged={staged} arrMetars={arrMetars} />
-          : tab === 'attempts' ? <AttemptsTab onLoadFlight={loadStaged} />
+          : tab === 'attempts' ? <AttemptsTab onLoadFlight={loadStaged} acTypeFilter={acTypeFilter} setAcTypeFilter={setAcTypeFilter} airportFilter={airportFilter} setAirportFilter={setAirportFilter} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} />
           : tab === 'settings' ? <SettingsTab />
           : null}
       </div>
@@ -983,15 +987,11 @@ function MapUpdater({ center }) {
   return null
 }
 
-function AttemptsTab({ onLoadFlight }) {
+function AttemptsTab({ onLoadFlight, acTypeFilter, setAcTypeFilter, airportFilter, setAirportFilter, dateFrom, setDateFrom, dateTo, setDateTo }) {
   const [flights, setFlights] = useState([])
   const [stats, setStats] = useState(null)
   const [filterOptions, setFilterOptions] = useState({ ac_types: [], airports: [] })
   const [loading, setLoading] = useState(true)
-  const [acTypeFilter, setAcTypeFilter] = useState('')
-  const [airportFilter, setAirportFilter] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
 
   useEffect(() => {
     fetchFlights()
