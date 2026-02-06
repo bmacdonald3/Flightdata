@@ -945,31 +945,38 @@ function MapUpdater({ center }) {
 }
 
 function AttemptsTab({ onLoadFlight }) {
-  const [attempts, setAttempts] = useState([])
+  const [flights, setFlights] = useState([])
   const [stats, setStats] = useState(null)
-  const [filter, setFilter] = useState('all') // all, success, failed
+  const [filterOptions, setFilterOptions] = useState({ ac_types: [], airports: [] })
   const [loading, setLoading] = useState(true)
-  
+  const [acTypeFilter, setAcTypeFilter] = useState('')
+  const [airportFilter, setAirportFilter] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+
   useEffect(() => {
-    fetchAttempts()
-  }, [filter])
-  
-  const fetchAttempts = async () => {
+    fetchFlights()
+  }, [acTypeFilter, airportFilter, dateFrom, dateTo])
+
+  const fetchFlights = async () => {
     setLoading(true)
-    let url = `${API}/scoring_attempts?limit=200`
-    if (filter === 'success') url += '&success=true'
-    if (filter === 'failed') url += '&failed=true'
+    let url = `${API}/scored_flights?limit=1000`
+    if (acTypeFilter) url += `&ac_type=${encodeURIComponent(acTypeFilter)}`
+    if (airportFilter) url += `&airport=${encodeURIComponent(airportFilter)}`
+    if (dateFrom) url += `&date_from=${dateFrom}`
+    if (dateTo) url += `&date_to=${dateTo}`
     try {
       const res = await fetch(url)
       const data = await res.json()
-      setAttempts(data.attempts || [])
+      setFlights(data.flights || [])
       setStats(data.stats)
+      if (data.filter_options) setFilterOptions(data.filter_options)
     } catch (e) {
-      console.error('Failed to fetch attempts:', e)
+      console.error('Failed to fetch flights:', e)
     }
     setLoading(false)
   }
-  
+
   const loadFlight = async (gufi) => {
     try {
       await fetch(`${API}/stage`, {
@@ -982,27 +989,58 @@ function AttemptsTab({ onLoadFlight }) {
       alert('Failed to stage flight: ' + e.message)
     }
   }
-  
+
   const gradeColor = (g) => ({ A: '#8f8', B: '#8f8', C: '#ff8', D: '#fa8', F: '#f88' }[g] || '#888')
-  
+  const inputStyle = { padding: '6px 10px', background: '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, fontSize: 12 }
+
   return (
     <div style={{ padding: 16, height: '100%', overflow: 'auto' }}>
-      <div style={{ display: 'flex', gap: 20, marginBottom: 16, alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>Scoring Attempts</h3>
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0 }}>Scored Flights</h3>
         {stats && (
-          <span style={{ color: '#888' }}>
-            Total: {stats.total} | Scored: <span style={{ color: '#8f8' }}>{stats.succeeded}</span> | 
-            Failed: <span style={{ color: '#f88' }}>{stats.failed}</span>
+          <span style={{ color: '#888', fontSize: 12 }}>
+            {stats.total} flights | Avg: {stats.avg_pct?.toFixed(0)}% |
+            <span style={{ color: '#8f8' }}> A:{stats.grade_a}</span>
+            <span style={{ color: '#8f8' }}> B:{stats.grade_b}</span>
+            <span style={{ color: '#ff8' }}> C:{stats.grade_c}</span>
+            <span style={{ color: '#fa8' }}> D:{stats.grade_d}</span>
+            <span style={{ color: '#f88' }}> F:{stats.grade_f}</span>
           </span>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <button onClick={() => setFilter('all')} style={{ padding: '6px 12px', background: filter === 'all' ? '#4a4a6a' : '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>All</button>
-          <button onClick={() => setFilter('success')} style={{ padding: '6px 12px', background: filter === 'success' ? '#4a6a4a' : '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>Scored</button>
-          <button onClick={() => setFilter('failed')} style={{ padding: '6px 12px', background: filter === 'failed' ? '#6a4a4a' : '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>Failed</button>
-          <button onClick={fetchAttempts} style={{ padding: '6px 12px', background: '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer' }}>↻ Refresh</button>
-        </div>
       </div>
       
+      <div style={{ display: 'flex', gap: 12, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap', background: '#1a1a2e', padding: 12, borderRadius: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: '#888', fontSize: 12 }}>Type:</span>
+          <select value={acTypeFilter} onChange={e => setAcTypeFilter(e.target.value)} style={{ ...inputStyle, minWidth: 100 }}>
+            <option value="">All</option>
+            {filterOptions.ac_types.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: '#888', fontSize: 12 }}>Airport:</span>
+          <select value={airportFilter} onChange={e => setAirportFilter(e.target.value)} style={{ ...inputStyle, minWidth: 100 }}>
+            <option value="">All</option>
+            {filterOptions.airports.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: '#888', fontSize: 12 }}>From:</span>
+          <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} style={inputStyle} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ color: '#888', fontSize: 12 }}>To:</span>
+          <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} style={inputStyle} />
+        </div>
+        <button onClick={() => { setAcTypeFilter(''); setAirportFilter(''); setDateFrom(''); setDateTo(''); }} 
+          style={{ padding: '6px 12px', background: '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+          Clear
+        </button>
+        <button onClick={fetchFlights} style={{ padding: '6px 12px', background: '#2a2a4a', border: '1px solid #444', color: '#eee', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+          ↻ Refresh
+        </button>
+      </div>
+
       {loading ? (
         <div style={{ color: '#888', padding: 20 }}>Loading...</div>
       ) : (
@@ -1013,37 +1051,29 @@ function AttemptsTab({ onLoadFlight }) {
               <th style={{ padding: 8 }}>Callsign</th>
               <th style={{ padding: 8 }}>Type</th>
               <th style={{ padding: 8 }}>Airport</th>
+              <th style={{ padding: 8 }}>Rwy</th>
               <th style={{ padding: 8 }}>Score</th>
               <th style={{ padding: 8 }}>Grade</th>
-              <th style={{ padding: 8 }}>Alt Range</th>
-              <th style={{ padding: 8 }}>Points</th>
-              <th style={{ padding: 8 }}>Status</th>
+              <th style={{ padding: 8 }}>Wind</th>
+              <th style={{ padding: 8 }}>XW</th>
               <th style={{ padding: 8 }}>Action</th>
             </tr>
           </thead>
           <tbody>
-            {attempts.map((a, i) => (
+            {flights.map((f, i) => (
               <tr key={i} style={{ background: i % 2 ? '#1a1a2e' : '#252540', borderBottom: '1px solid #333' }}>
-                <td style={{ padding: 6 }}>{a.flight_date || '-'}</td>
-                <td style={{ padding: 6, fontWeight: 'bold' }}>{a.callsign}</td>
-                <td style={{ padding: 6, color: '#888' }}>{a.ac_type || '-'}</td>
-                <td style={{ padding: 6 }}>{a.arr_airport}</td>
-                <td style={{ padding: 6 }}>{a.score_percentage != null ? `${a.score_percentage}%` : '-'}</td>
-                <td style={{ padding: 6 }}><span style={{ color: gradeColor(a.score_grade), fontWeight: 'bold' }}>{a.score_grade || '-'}</span></td>
-                <td style={{ padding: 6, color: '#888' }}>{a.min_altitude}-{a.max_altitude}ft</td>
-                <td style={{ padding: 6, color: '#888' }}>{a.track_points}</td>
+                <td style={{ padding: 6 }}>{f.flight_date || '-'}</td>
+                <td style={{ padding: 6, fontWeight: 'bold' }}>{f.callsign}</td>
+                <td style={{ padding: 6, color: '#888' }}>{f.ac_type || '-'}</td>
+                <td style={{ padding: 6 }}>{f.arr_airport}</td>
+                <td style={{ padding: 6, color: '#888' }}>{f.runway_id || '-'}</td>
+                <td style={{ padding: 6 }}>{f.percentage}%</td>
+                <td style={{ padding: 6 }}><span style={{ color: gradeColor(f.grade), fontWeight: 'bold' }}>{f.grade}</span></td>
+                <td style={{ padding: 6, color: '#888' }}>{f.wind_speed_kt || '-'}kt</td>
+                <td style={{ padding: 6, color: '#888' }}>{f.crosswind_kt || '-'}kt</td>
                 <td style={{ padding: 6 }}>
-                  {a.success ? (
-                    <span style={{ color: '#8f8' }}>✓ Scored</span>
-                  ) : (
-                    <span style={{ color: '#f88' }} title={a.failure_reason}>✗ {a.failure_reason?.substring(0, 20)}...</span>
-                  )}
-                </td>
-                <td style={{ padding: 6 }}>
-                  <button 
-                    onClick={() => loadFlight(a.gufi)} 
-                    style={{ padding: '4px 8px', background: '#4a4a6a', border: 'none', color: '#eee', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
-                  >
+                  <button onClick={() => loadFlight(f.gufi)} 
+                    style={{ padding: '4px 8px', background: '#4a4a6a', border: 'none', color: '#eee', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>
                     Load
                   </button>
                 </td>
