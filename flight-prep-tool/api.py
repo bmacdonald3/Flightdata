@@ -872,5 +872,45 @@ def health_check():
         pass
     return jsonify(status)
 
+
+
+@app.route('/api/fleet_rank', methods=['GET'])
+def get_fleet_rank():
+    """Get rank of a specific score within ac_type fleet over a time period."""
+    ac_type = request.args.get('ac_type')
+    score = request.args.get('score', type=int)
+    days = request.args.get('days', 30, type=int)
+    if not ac_type or score is None:
+        return jsonify({'error': 'ac_type and score required'}), 400
+
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+
+    cursor.execute("""
+        SELECT percentage FROM approach_scores
+        WHERE ac_type = %s AND flight_date >= DATEADD(day, -%s, GETUTCDATE())
+        ORDER BY percentage DESC
+    """, (ac_type, days))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return jsonify({'rank': None, 'total': 0})
+
+    scores = [r['percentage'] for r in rows]
+    rank = 1
+    for s in scores:
+        if s > score:
+            rank += 1
+        else:
+            break
+
+    return jsonify({
+        'rank': rank,
+        'total': len(scores),
+        'period_days': days,
+        'ac_type': ac_type
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)

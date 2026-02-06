@@ -576,6 +576,8 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
   const runways = staged?.runways || [], track = staged?.track || [], flight = staged?.flight || {}
   const [selectedRunway, setSelectedRunway] = useState(null)
   const [benchmark, setBenchmark] = useState(null)
+  const [fleetRank, setFleetRank] = useState(null)
+  const [fleetDays, setFleetDays] = useState(30)
   
   // Fetch benchmark for this aircraft type
   useEffect(() => {
@@ -586,6 +588,13 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
         .catch(() => setBenchmark(null))
     }
   }, [aircraftSpeeds?.ac_type])
+
+  const fetchFleetRank = (acType, score, days) => {
+    fetch(`${API}/fleet_rank?ac_type=${encodeURIComponent(acType)}&score=${score}&days=${days}`)
+      .then(r => r.json())
+      .then(data => setFleetRank(data))
+      .catch(() => setFleetRank(null))
+  }
   const [glideslopeAngle, setGlideslopeAngle] = useState(3.0)
   const [tch, setTch] = useState(50)
   const [approachSpeed, setApproachSpeed] = useState(80)
@@ -690,6 +699,11 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
     [approachPoints, selectedRunway, latestMetar, aircraftSpeeds]
   )
 
+  useEffect(() => {
+    if (approachScore && aircraftSpeeds?.ac_type) {
+      fetchFleetRank(aircraftSpeeds.ac_type, approachScore.percentage, fleetDays)
+    }
+  }, [approachScore, aircraftSpeeds?.ac_type, fleetDays])
   const fpmSlopeAlt = (distNm) => (selectedRunway?.elevation || 0) + tch + 500 * distNm / (approachSpeed / 60)
 
   const W = 900, H = 320, PAD = 60
@@ -848,11 +862,20 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
               </div>
               {benchmark && benchmark.flight_count > 0 && (
                 <div style={{ marginTop: 12, padding: 10, background: '#252550', borderRadius: 6, border: '1px solid #446' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 6 }}>
                     <span style={{ color: '#8cf', fontWeight: 600 }}>vs {aircraftSpeeds?.ac_type} Fleet</span>
-                    <span style={{ color: '#888', fontSize: 11 }}>{benchmark.flight_count} flights scored</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <select value={fleetDays} onChange={e => { const d = parseInt(e.target.value); setFleetDays(d); if (aircraftSpeeds?.ac_type && approachScore) fetchFleetRank(aircraftSpeeds.ac_type, approachScore.percentage, d) }} style={{ padding: '2px 6px', background: '#1a1a2e', border: '1px solid #444', color: '#ccc', borderRadius: 4, fontSize: 11 }}>
+                        <option value={7}>7 days</option>
+                        <option value={14}>14 days</option>
+                        <option value={30}>30 days</option>
+                        <option value={90}>90 days</option>
+                        <option value={365}>1 year</option>
+                      </select>
+                      <span style={{ color: '#888', fontSize: 11 }}>{benchmark.flight_count} flights</span>
+                    </div>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, fontSize: 11 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, fontSize: 11 }}>
                     <div>
                       <div style={{ color: '#888' }}>Fleet Avg</div>
                       <div style={{ fontSize: 16, fontWeight: 'bold' }}>{parseFloat(benchmark.avg_percentage).toFixed(0)}%</div>
@@ -864,6 +887,12 @@ function VisualizationTab({ staged, arrMetars, aircraftSpeeds }) {
                         <span style={{ fontSize: 11, marginLeft: 4 }}>
                           ({approachScore.percentage >= parseFloat(benchmark.avg_percentage) ? '+' : ''}{(approachScore.percentage - parseFloat(benchmark.avg_percentage)).toFixed(0)})
                         </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ color: '#888' }}>Rank</div>
+                      <div style={{ fontSize: 16, fontWeight: 'bold', color: '#8cf' }}>
+                        {fleetRank && fleetRank.total > 0 ? `${fleetRank.rank}/${fleetRank.total}` : '—'}
                       </div>
                     </div>
                     <div>
