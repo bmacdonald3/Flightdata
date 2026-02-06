@@ -842,5 +842,35 @@ def get_score_grid():
     conn.close()
     return jsonify({'grid': rows})
 
+
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check for Home Assistant monitoring."""
+    import time
+    status = {'api': 'ok', 'uptime': time.time()}
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        status['database'] = 'ok'
+    except Exception as e:
+        status['database'] = 'error'
+        status['db_error'] = str(e)
+    try:
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM approach_scores")
+        status['scored_flights'] = cursor.fetchone()[0]
+        cursor.execute("SELECT TOP 1 scored_at FROM approach_scores ORDER BY scored_at DESC")
+        row = cursor.fetchone()
+        status['last_scored'] = row[0].isoformat() if row else None
+        conn.close()
+    except:
+        pass
+    return jsonify(status)
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
