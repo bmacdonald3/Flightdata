@@ -11,7 +11,7 @@ const toInHg = (val) => {
 }
 
 export default function App() {
-  const [tab, setTab] = useState('data')
+  const [tab, setTab] = useState('attempts')
   const [staged, setStaged] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -105,7 +105,7 @@ export default function App() {
         </>}
       </div>
       <div style={{ display: 'flex', borderBottom: '1px solid #333' }}>
-        {['data', 'calibrator', 'visualization', 'map', 'attempts'].map(t => (
+        {['attempts', 'data', 'calibrator', 'visualization', 'map'].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ padding: '12px 24px', background: tab === t ? '#2a2a4a' : 'transparent', color: tab === t ? '#6cf' : '#888', border: 'none', borderBottom: tab === t ? '2px solid #6cf' : '2px solid transparent', ...font, fontSize: 14, cursor: 'pointer', textTransform: 'capitalize' }}>
             {t === 'data' ? 'Data Set' : t === 'calibrator' ? 'Calibrator' : t === 'visualization' ? 'Profile' : t === 'map' ? 'Map' : 'Scoreboard'}
           </button>
