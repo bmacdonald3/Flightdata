@@ -16,6 +16,33 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [aircraftSpeeds, setAircraftSpeeds] = useState(null)
+  const [scoringStatus, setScoringStatus] = useState(null)
+  const [scoringRunning, setScoringRunning] = useState(false)
+
+  useEffect(() => {
+    fetchScoringStatus()
+    const interval = setInterval(fetchScoringStatus, 60000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const fetchScoringStatus = async () => {
+    try {
+      const res = await fetch(`${API}/scoring_status`)
+      if (res.ok) setScoringStatus(await res.json())
+    } catch (e) { console.error('Failed to fetch scoring status:', e) }
+  }
+
+  const runScoring = async () => {
+    setScoringRunning(true)
+    try {
+      await fetch(`${API}/run_scoring`, { method: 'POST' })
+      setTimeout(() => { fetchScoringStatus(); setScoringRunning(false) }, 5000)
+    } catch (e) {
+      alert('Failed to start scoring: ' + e.message)
+      setScoringRunning(false)
+    }
+  }
+
 
   useEffect(() => { loadStaged() }, [])
 
@@ -60,6 +87,16 @@ export default function App() {
     <div style={{ height: '100vh', ...font, fontSize: 13, background: '#1a1a2e', color: '#eee', display: 'flex', flexDirection: 'column' }}>
       <div style={{ padding: 12, borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', gap: 15 }}>
         <b style={{ fontSize: 18 }}>Approach Calibrator</b>
+        {scoringStatus && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12, fontSize: 11, color: '#888' }}>
+            <span>Scored: <b style={{ color: '#8f8' }}>{scoringStatus.total_scored}</b></span>
+            <span>Pending: <b style={{ color: '#fa8' }}>{scoringStatus.pending}</b></span>
+            <span>Last: <b>{scoringStatus.last_attempt ? new Date(scoringStatus.last_attempt).toLocaleString() : '-'}</b></span>
+            <button onClick={runScoring} disabled={scoringRunning} style={{ padding: '4px 10px', background: scoringRunning ? '#444' : '#4a6a4a', border: 'none', color: '#eee', borderRadius: 4, cursor: scoringRunning ? 'default' : 'pointer', fontSize: 11 }}>
+              {scoringRunning ? 'Running...' : '▶ Run Scoring'}
+            </button>
+          </div>
+        )}
         <button onClick={loadStaged} style={{ padding: '6px 14px', background: '#333', color: '#eee', border: '1px solid #444', borderRadius: 4, ...font, fontSize: 13 }}>{loading ? '...' : 'Reload'}</button>
         <a href="http://192.168.42.13:5174" target="_blank" rel="noreferrer" style={{ padding: '6px 14px', background: '#06c', color: '#fff', textDecoration: 'none', borderRadius: 4, ...font, fontSize: 13 }}>← Flight Data Prep</a>
         {staged && <>
