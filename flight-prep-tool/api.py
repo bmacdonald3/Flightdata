@@ -648,5 +648,54 @@ def get_scored_flights():
     })
 
 
+@app.route('/api/scoring_status', methods=['GET'])
+def get_scoring_status():
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    # Get last scoring attempt time
+    cursor.execute("SELECT TOP 1 attempted_at FROM scoring_attempts ORDER BY attempted_at DESC")
+    last_attempt = cursor.fetchone()
+    
+    # Get last successful score time
+    cursor.execute("SELECT TOP 1 scored_at FROM approach_scores ORDER BY scored_at DESC")
+    last_score = cursor.fetchone()
+    
+    # Get counts
+    cursor.execute("SELECT COUNT(*) as total FROM approach_scores")
+    total_scored = cursor.fetchone()['total']
+    
+    cursor.execute("SELECT COUNT(*) as pending FROM flights f WHERE f.callsign LIKE 'N%' AND f.arrival IS NOT NULL AND NOT EXISTS (SELECT 1 FROM scoring_attempts s WHERE s.gufi = f.gufi) GROUP BY f.gufi HAVING MIN(f.altitude) < 2000")
+    # This query is complex, simplify
+    cursor.execute("SELECT COUNT(DISTINCT gufi) as pending FROM flights WHERE callsign LIKE 'N%' AND arrival IS NOT NULL AND gufi NOT IN (SELECT gufi FROM scoring_attempts)")
+    pending_result = cursor.fetchone()
+    pending = pending_result['pending'] if pending_result else 0
+    
+    conn.close()
+    
+    return jsonify({
+        'last_attempt': last_attempt['attempted_at'].isoformat() if last_attempt and last_attempt['attempted_at'] else None,
+        'last_score': last_score['scored_at'].isoformat() if last_score and last_score['scored_at'] else None,
+        'total_scored': total_scored,
+        'pending': pending
+    })
+
+
+@app.route('/api/run_scoring', methods=['POST'])
+def run_scoring():
+    import subprocess
+    try:
+        # Run batch scoring in background
+        result = subprocess.Popen(
+            ['python3', '/home/bmacdonald3/flight-prep-tool/batch_score.py', '--days', '7', '--limit', '100'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd='/home/bmacdonald3/flight-prep-tool'
+        )
+        return jsonify({'status': 'started', 'message': 'Scoring process started in background'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
