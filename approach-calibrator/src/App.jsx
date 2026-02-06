@@ -125,7 +125,7 @@ export default function App() {
           : tab === 'visualization' ? <VisualizationTab staged={staged} arrMetars={arrMetars} aircraftSpeeds={aircraftSpeeds} />
           : tab === 'map' ? <MapTab staged={staged} arrMetars={arrMetars} />
           : tab === 'attempts' ? <AttemptsTab onLoadFlight={loadStaged} acTypeFilter={acTypeFilter} setAcTypeFilter={setAcTypeFilter} airportFilter={airportFilter} setAirportFilter={setAirportFilter} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} />
-          : tab === 'grid' ? <GridTab />
+          : tab === 'grid' ? <GridTab setAcTypeFilter={setAcTypeFilter} setAirportFilter={setAirportFilter} setDateFrom={setDateFrom} setDateTo={setDateTo} setTab={setTab} />
           : tab === 'grid' || tab === 'settings' ? <SettingsTab />
           : null}
       </div>

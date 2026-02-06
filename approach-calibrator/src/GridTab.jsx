@@ -23,7 +23,7 @@ function getMonthOptions(dates) {
   return [...months].sort().reverse()
 }
 
-export default function GridTab() {
+export default function GridTab({ setAcTypeFilter, setAirportFilter, setDateFrom, setDateTo, setTab }) {
   const [grid, setGrid] = useState([])
   const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState('alpha')
@@ -37,28 +37,37 @@ export default function GridTab() {
       .then(r => r.json())
       .then(data => {
         setGrid(data.grid || [])
-        // Default to current month
         const allDates = [...new Set((data.grid || []).map(r => r.flight_date))].sort()
         if (allDates.length > 0) {
-          const latest = allDates[allDates.length - 1]
-          setSelectedMonth(latest.slice(0, 7))
+          setSelectedMonth(allDates[allDates.length - 1].slice(0, 7))
         }
         setLoading(false)
       })
       .catch(() => setLoading(false))
   }, [])
 
+  const handleCellClick = (acType, date) => {
+    if (setAcTypeFilter) setAcTypeFilter(acType)
+    if (setAirportFilter) setAirportFilter('')
+    if (setDateFrom) setDateFrom(date)
+    if (setDateTo) setDateTo(date)
+    if (setTab) setTab('attempts')
+  }
+
+  const handleAcClick = (acType) => {
+    if (setAcTypeFilter) setAcTypeFilter(acType)
+    if (setAirportFilter) setAirportFilter('')
+    if (setDateFrom) setDateFrom('')
+    if (setDateTo) setDateTo('')
+    if (setTab) setTab('attempts')
+  }
+
   if (loading) return <div style={{padding:40,textAlign:'center',color:'#888'}}>Loading grid...</div>
   if (!grid.length) return <div style={{padding:40,textAlign:'center',color:'#888'}}>No scored flights yet</div>
 
-  // All dates for month picker
   const allDates = [...new Set(grid.map(r => r.flight_date))].sort()
   const monthOptions = getMonthOptions(allDates)
-
-  // Filter grid by selected month
   const filtered = selectedMonth === 'all' ? grid : grid.filter(r => r.flight_date.startsWith(selectedMonth))
-
-  // Build dates and ac_types from filtered data
   const dates = [...new Set(filtered.map(r => r.flight_date))].sort()
   const acMap = {}
   filtered.forEach(r => {
@@ -70,7 +79,6 @@ export default function GridTab() {
 
   let acTypes = Object.keys(acMap).filter(ac => acMap[ac].total >= minFlights)
 
-  // Sort handler
   const handleHeaderClick = (type, date) => {
     if (type === sortBy && date === sortDate) {
       setSortDir(d => d * -1)
@@ -86,7 +94,6 @@ export default function GridTab() {
     return sortDir === 1 ? ' ▲' : ' ▼'
   }
 
-  // Apply sort
   if (sortBy === 'alpha') {
     acTypes.sort((a, b) => a.localeCompare(b) * sortDir)
   } else if (sortBy === 'score') {
@@ -103,7 +110,6 @@ export default function GridTab() {
 
   const thStyle = {padding:'8px 6px',textAlign:'center',borderBottom:'2px solid #334155',color:'#94a3b8',fontWeight:600,cursor:'pointer',userSelect:'none',whiteSpace:'nowrap'}
 
-  // Month label for display
   const monthLabel = (m) => {
     if (m === 'all') return 'All Time'
     const [y, mo] = m.split('-')
@@ -116,7 +122,7 @@ export default function GridTab() {
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,flexWrap:'wrap',gap:10}}>
         <div>
           <h2 style={{fontSize:20,fontWeight:600,color:'#e2e8f0',margin:0}}>Score Grid</h2>
-          <p style={{fontSize:13,color:'#64748b',margin:'4px 0 0'}}>{acTypes.length} aircraft types across {dates.length} days</p>
+          <p style={{fontSize:13,color:'#64748b',margin:'4px 0 0'}}>{acTypes.length} aircraft types across {dates.length} days — click any cell to view flights</p>
         </div>
         <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
           <label style={{fontSize:12,color:'#888'}}>Month:
@@ -159,15 +165,15 @@ export default function GridTab() {
               const overall = Math.round(info.sum / info.total)
               return (
                 <tr key={ac} style={{transition:'background 0.1s'}} onMouseEnter={e=>e.currentTarget.style.background='#ffffff08'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-                  <td style={{position:'sticky',left:0,zIndex:1,background:'#1a1a2e',padding:'6px 12px',borderBottom:'1px solid #222',color:'#e2e8f0',fontWeight:500,fontFamily:'monospace'}}>{ac}</td>
+                  <td onClick={() => handleAcClick(ac)} style={{position:'sticky',left:0,zIndex:1,background:'#1a1a2e',padding:'6px 12px',borderBottom:'1px solid #222',color:'#6cf',fontWeight:500,fontFamily:'monospace',cursor:'pointer'}} title={'View all ' + ac + ' flights'}>{ac}</td>
                   <td style={{padding:'6px 8px',textAlign:'center',borderBottom:'1px solid #222',fontWeight:600,color:scoreColor(overall)}}>{overall}</td>
                   <td style={{padding:'6px 8px',textAlign:'center',borderBottom:'1px solid #222',color:'#64748b'}}>{info.total}</td>
                   {dates.map(d => {
                     const cell = info.dates[d]
                     if (!cell) return <td key={d} style={{padding:'6px',borderBottom:'1px solid #222',textAlign:'center',color:'#333'}}>-</td>
                     return (
-                      <td key={d} style={{padding:'4px',borderBottom:'1px solid #222',textAlign:'center'}}>
-                        <div style={{background:scoreColor(cell.avg_score),color:textColor(cell.avg_score),borderRadius:4,padding:'4px 6px',fontWeight:600,fontSize:12,lineHeight:1}}>
+                      <td key={d} onClick={() => handleCellClick(ac, d)} style={{padding:'4px',borderBottom:'1px solid #222',textAlign:'center',cursor:'pointer'}} title={ac + ' on ' + d + ': ' + cell.flights + ' flights, avg ' + cell.avg_score}>
+                        <div style={{background:scoreColor(cell.avg_score),color:textColor(cell.avg_score),borderRadius:4,padding:'4px 6px',fontWeight:600,fontSize:12,lineHeight:1,transition:'filter 0.1s'}} onMouseEnter={e=>e.currentTarget.style.filter='brightness(1.2)'} onMouseLeave={e=>e.currentTarget.style.filter='none'}>
                           {cell.avg_score}
                         </div>
                         <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{cell.flights}f</div>
