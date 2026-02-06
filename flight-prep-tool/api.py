@@ -525,5 +525,128 @@ def get_scoring_attempts():
     return jsonify({'stats': stats, 'attempts': attempts})
 
 
+@app.route('/api/benchmarks', methods=['GET'])
+def get_benchmarks():
+    benchmark_type = request.args.get('type', 'ac_type')
+    key = request.args.get('key')
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    if key:
+        cursor.execute("""
+            SELECT * FROM approach_benchmarks 
+            WHERE benchmark_type = %s AND benchmark_key = %s
+        """, (benchmark_type, key))
+        result = cursor.fetchone()
+    else:
+        cursor.execute("""
+            SELECT * FROM approach_benchmarks 
+            WHERE benchmark_type = %s 
+            ORDER BY avg_percentage DESC
+        """, (benchmark_type,))
+        result = cursor.fetchall()
+    
+    conn.close()
+    return jsonify(result if result else {})
+
+
+@app.route('/api/aircraft_speeds', methods=['GET'])
+def get_aircraft_speeds():
+    ac_type = request.args.get('ac_type')
+    if not ac_type:
+        return jsonify({'error': 'ac_type required'}), 400
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    cursor.execute("SELECT * FROM aircraft_speeds WHERE ac_type = %s", (ac_type,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return jsonify(result)
+    else:
+        return jsonify({}), 404
+
+
+@app.route('/api/scored_flights', methods=['GET'])
+def get_scored_flights():
+    ac_type = request.args.get('ac_type')
+    airport = request.args.get('airport')
+    date_from = request.args.get('date_from')
+    date_to = request.args.get('date_to')
+    limit = int(request.args.get('limit', 500))
+    
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    
+    where = []
+    params = []
+    if ac_type:
+        where.append("ac_type = %s")
+        params.append(ac_type)
+    if airport:
+        where.append("arr_airport = %s")
+        params.append(airport)
+    if date_from:
+        where.append("flight_date >= %s")
+        params.append(date_from)
+    if date_to:
+        where.append("flight_date <= %s")
+        params.append(date_to)
+    
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    
+    cursor.execute(f"""
+        SELECT TOP {limit} gufi, callsign, ac_type, arr_airport, runway_id, flight_date,
+               percentage, grade, total_score, max_score, severe_penalty_count,
+               descent_score, stabilized_score, centerline_score, 
+               turn_to_final_score, speed_control_score, threshold_score,
+               wind_speed_kt, crosswind_kt, scored_at
+        FROM approach_scores
+        {where_sql}
+        ORDER BY flight_date DESC, scored_at DESC
+    """, tuple(params))
+    flights = cursor.fetchall()
+    
+    # Get filter options
+    cursor.execute("SELECT DISTINCT ac_type FROM approach_scores WHERE ac_type IS NOT NULL ORDER BY ac_type")
+    ac_types = [r['ac_type'] for r in cursor.fetchall()]
+    
+    cursor.execute("SELECT DISTINCT arr_airport FROM approach_scores WHERE arr_airport IS NOT NULL ORDER BY arr_airport")
+    airports = [r['arr_airport'] for r in cursor.fetchall()]
+    
+    # Get summary stats
+    cursor.execute(f"""
+        SELECT COUNT(*) as total,
+               AVG(CAST(percentage as FLOAT)) as avg_pct,
+               SUM(CASE WHEN grade = 'A' THEN 1 ELSE 0 END) as grade_a,
+               SUM(CASE WHEN grade = 'B' THEN 1 ELSE 0 END) as grade_b,
+               SUM(CASE WHEN grade = 'C' THEN 1 ELSE 0 END) as grade_c,
+               SUM(CASE WHEN grade = 'D' THEN 1 ELSE 0 END) as grade_d,
+               SUM(CASE WHEN grade = 'F' THEN 1 ELSE 0 END) as grade_f
+        FROM approach_scores
+        {where_sql}
+    """, tuple(params))
+    stats = cursor.fetchone()
+    
+    conn.close()
+    
+    for f in flights:
+        if f.get('flight_date'):
+            f['flight_date'] = f['flight_date'].isoformat()
+        if f.get('scored_at'):
+            f['scored_at'] = f['scored_at'].isoformat()
+    
+    return jsonify({
+        'flights': flights,
+        'stats': stats,
+        'filter_options': {
+            'ac_types': ac_types,
+            'airports': airports
+        }
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
