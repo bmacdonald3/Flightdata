@@ -2,3 +2,5 @@
 jms-client/
 __pycache__/
 *.pyc
+.nvm/
+jms-client/
