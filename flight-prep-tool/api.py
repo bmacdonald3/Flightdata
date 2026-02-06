@@ -822,5 +822,25 @@ def rescore_all():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+
+
+@app.route('/api/score_grid', methods=['GET'])
+def get_score_grid():
+    """Get average scores grouped by ac_type and date for heatmap grid."""
+    conn = get_conn()
+    cursor = conn.cursor(as_dict=True)
+    cursor.execute("""
+        SELECT ac_type, CONVERT(varchar, flight_date, 23) as flight_date,
+               COUNT(*) as flights, AVG(percentage) as avg_score,
+               MIN(percentage) as min_score, MAX(percentage) as max_score
+        FROM approach_scores
+        WHERE ac_type IS NOT NULL AND flight_date IS NOT NULL
+        GROUP BY ac_type, flight_date
+        ORDER BY ac_type, flight_date
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return jsonify({'grid': rows})
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)
